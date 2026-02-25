@@ -1,0 +1,73 @@
+/**
+ * Socket.IO 客户端封装
+ * 管理 WebSocket 连接和事件监听
+ */
+import { io } from 'socket.io-client';
+import { getServerUrl } from './api';
+
+let socket = null;
+
+/**
+ * 建立 Socket 连接
+ */
+export function connectSocket(token) {
+    if (socket && socket.connected) {
+        return socket;
+    }
+
+    socket = io(getServerUrl(), {
+        auth: { token },
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionAttempts: 10,
+    });
+
+    socket.on('connect', () => {
+        console.log('✅ WebSocket 已连接');
+    });
+
+    socket.on('connect_error', (err) => {
+        console.error('❌ WebSocket 连接失败:', err.message);
+    });
+
+    socket.on('disconnect', (reason) => {
+        console.log('⚠️ WebSocket 已断开:', reason);
+    });
+
+    return socket;
+}
+
+/**
+ * 断开 Socket 连接
+ */
+export function disconnectSocket() {
+    if (socket) {
+        socket.disconnect();
+        socket = null;
+    }
+}
+
+/**
+ * 获取当前 Socket 实例
+ */
+export function getSocket() {
+    return socket;
+}
+
+/**
+ * 发送聊天消息
+ */
+export function sendMessage(to, type, content) {
+    if (socket && socket.connected) {
+        socket.emit('chat:message', { to, type, content });
+    }
+}
+
+/**
+ * 发送正在输入提示
+ */
+export function sendTyping(to) {
+    if (socket && socket.connected) {
+        socket.emit('chat:typing', { to });
+    }
+}

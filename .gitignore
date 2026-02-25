@@ -1,0 +1,38 @@
+# 依赖目录
+node_modules/
+
+# 构建输出
+dist/
+dist-electron/
+
+# 数据库文件
+*.sqlite
+*.sqlite3
+
+# 上传的文件
+server/src/uploads/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 日志
+*.log
+npm-debug.log*
+
+# 编辑器配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Electron 打包缓存
+client/release/
+client/dist-electron/

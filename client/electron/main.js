@@ -1,0 +1,246 @@
+/**
+ * Electron 主进程
+ * 负责创建窗口、系统托盘、截图功能
+ */
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const path = require('path');
+
+// 主窗口引用
+let mainWindow = null;
+let tray = null;
+
+// 判断是否为开发模式
+const isDev = !app.isPackaged;
+
+/**
+ * 创建主窗口
+ */
+function createMainWindow() {
+    mainWindow = new BrowserWindow({
+        width: 1000,
+        height: 700,
+        minWidth: 800,
+        minHeight: 600,
+        title: 'LanChat',
+        // 无默认菜单栏
+        autoHideMenuBar: true,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
+
+    // 加载页面
+    if (isDev) {
+        mainWindow.loadURL('http://localhost:5173');
+        // 开发模式打开 DevTools
+        mainWindow.webContents.openDevTools();
+    } else {
+        mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+    }
+
+    // 关闭窗口时最小化到托盘而非退出
+    mainWindow.on('close', (event) => {
+        if (!app.isQuitting) {
+            event.preventDefault();
+            mainWindow.hide();
+        }
+    });
+}
+
+/**
+ * 创建系统托盘
+ */
+function createTray() {
+    // 创建简单的托盘图标（16x16 蓝色圆点）
+    const icon = nativeImage.createFromBuffer(
+        Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAX0lEQVQ4T2NkoBAwUqifgWoGMDIy/mdgYPjPQCRgZGT8j80FLAwMDP8ZCBjAyMTE+J+BgOvABjAxMTEQ4wJGJiYmwi5gIcYAJmJcQHUDiA4DYsKAaDcQHQbEhAE+FwAAhTQlEUFfMCMAAAAASUVORK5CYII=',
+            'base64'
+        )
+    );
+
+    tray = new Tray(icon);
+    tray.setToolTip('LanChat - 局域网聊天');
+
+    const contextMenu = Menu.buildFromTemplate([
+        {
+            label: '打开主窗口',
+            click: () => {
+                if (mainWindow) {
+                    mainWindow.show();
+                    mainWindow.focus();
+                }
+            },
+        },
+        { type: 'separator' },
+        {
+            label: '退出',
+            click: () => {
+                app.isQuitting = true;
+                app.quit();
+            },
+        },
+    ]);
+
+    tray.setContextMenu(contextMenu);
+
+    // 双击托盘图标显示窗口
+    tray.on('double-click', () => {
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+
+// ===== 截图功能 =====
+
+let screenshotWindow = null;
+
+/**
+ * 启动截图流程
+ */
+async function startScreenshot() {
+    const { desktopCapturer, screen } = require('electron');
+
+    // 隐藏主窗口（避免截到自己的窗口）
+    if (mainWindow) mainWindow.hide();
+
+    // 等一小段时间确保窗口完全隐藏
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    try {
+        // 获取主显示器信息
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const { width, height } = primaryDisplay.size;
+        const scaleFactor = primaryDisplay.scaleFactor;
+
+        // 捕获全屏
+        const sources = await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: { width: width * scaleFactor, height: height * scaleFactor },
+        });
+
+        if (sources.length === 0) {
+            mainWindow.show();
+            return;
+        }
+
+        const screenImage = sources[0].thumbnail.toDataURL();
+
+        // 创建全屏截图窗口
+        screenshotWindow = new BrowserWindow({
+            fullscreen: true,
+            frame: false,
+            transparent: true,
+            alwaysOnTop: true,
+            skipTaskbar: true,
+            resizable: false,
+            webPreferences: {
+                preload: path.join(__dirname, 'preload.js'),
+                contextIsolation: true,
+                nodeIntegration: false,
+            },
+        });
+
+        // 加载截图覆盖层页面
+        if (isDev) {
+            screenshotWindow.loadURL('http://localhost:5173/#/screenshot');
+        } else {
+            screenshotWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
+                hash: '/screenshot',
+            });
+        }
+
+        // 截图窗口加载完成后发送屏幕截图数据
+        screenshotWindow.webContents.on('did-finish-load', () => {
+            screenshotWindow.webContents.send('screenshot:data', {
+                image: screenImage,
+                width,
+                height,
+                scaleFactor,
+            });
+        });
+
+        screenshotWindow.on('closed', () => {
+            screenshotWindow = null;
+        });
+    } catch (err) {
+        console.error('截图失败:', err);
+        if (mainWindow) mainWindow.show();
+    }
+}
+
+// ===== IPC 事件处理 =====
+
+// 截图完成（用户选取了区域）
+ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
+    if (screenshotWindow) {
+        screenshotWindow.close();
+        screenshotWindow = null;
+    }
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+        // 将截图数据发送给主窗口
+        mainWindow.webContents.send('screenshot:captured', imageDataUrl);
+    }
+});
+
+// 截图取消
+ipcMain.on('screenshot:cancel', () => {
+    if (screenshotWindow) {
+        screenshotWindow.close();
+        screenshotWindow = null;
+    }
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+    }
+});
+
+// 显示系统通知
+ipcMain.on('notification:show', (event, { title, body }) => {
+    const { Notification } = require('electron');
+    if (Notification.isSupported()) {
+        const notification = new Notification({ title, body });
+        notification.on('click', () => {
+            if (mainWindow) {
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        });
+        notification.show();
+    }
+});
+
+// ===== 应用生命周期 =====
+
+app.whenReady().then(() => {
+    createMainWindow();
+    createTray();
+
+    // 注册截图全局快捷键 Ctrl+Shift+A
+    globalShortcut.register('Ctrl+Shift+A', () => {
+        startScreenshot();
+    });
+});
+
+app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+        app.quit();
+    }
+});
+
+app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+        createMainWindow();
+    }
+});
+
+app.on('will-quit', () => {
+    // 注销所有快捷键
+    globalShortcut.unregisterAll();
+});
