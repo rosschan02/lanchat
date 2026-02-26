@@ -36,12 +36,13 @@ const storage = multer.diskStorage({
     },
 });
 
-// 文件过滤器
+// 文件过滤器 - 黑名单机制
 const fileFilter = (req, file, cb) => {
-    if (config.upload.allowedTypes.includes(file.mimetype)) {
-        cb(null, true);
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (config.upload.blockedExtensions.includes(ext)) {
+        cb(new Error('不允许上传此类型的文件'), false);
     } else {
-        cb(new Error('不支持的文件类型'), false);
+        cb(null, true);
     }
 };
 
@@ -65,17 +66,17 @@ router.post('/', authMiddleware, upload.single('file'), (req, res) => {
     const dateDir = new Date().toISOString().slice(0, 10);
     const url = `/uploads/${dateDir}/${req.file.filename}`;
 
-    res.json({ url, filename: req.file.originalname });
+    res.json({ url, filename: req.file.originalname, size: req.file.size });
 });
 
 // 错误处理
 router.use((err, req, res, next) => {
     if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: '文件大小不能超过 10MB' });
+            return res.status(400).json({ error: `文件大小不能超过 ${config.upload.maxSize / 1024 / 1024}MB` });
         }
     }
-    if (err.message === '不支持的文件类型') {
+    if (err.message === '不允许上传此类型的文件') {
         return res.status(400).json({ error: err.message });
     }
     next(err);

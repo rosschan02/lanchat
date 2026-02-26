@@ -16,7 +16,7 @@ function saveMessage(fromUserId, toUserId, type, content) {
 
     // 返回完整的消息对象
     const message = db.prepare(`
-    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at,
+    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at, m.is_revoked,
            u.username as from_username, u.nickname as from_nickname, u.avatar as from_avatar
     FROM messages m
     LEFT JOIN users u ON m.from_user_id = u.id
@@ -26,4 +26,20 @@ function saveMessage(fromUserId, toUserId, type, content) {
     return message;
 }
 
-module.exports = { saveMessage };
+/**
+ * 撤回消息
+ */
+function revokeMessage(messageId) {
+    const db = getDb();
+    db.prepare('UPDATE messages SET is_revoked = 1 WHERE id = ?').run(messageId);
+}
+
+/**
+ * 获取消息（用于撤回校验）
+ */
+function getMessage(messageId) {
+    const db = getDb();
+    return db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+}
+
+module.exports = { saveMessage, revokeMessage, getMessage };

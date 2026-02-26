@@ -27,16 +27,16 @@ const io = new Server(server, {
         origin: '*',
         methods: ['GET', 'POST'],
     },
-    // 设置最大消息体大小为 10MB（用于图片）
-    maxHttpBufferSize: 10 * 1024 * 1024,
+    // 设置最大消息体大小为 50MB（用于文件传输）
+    maxHttpBufferSize: 50 * 1024 * 1024,
 });
 
 // ===== 中间件 =====
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// 静态文件（上传的图片）
+// 静态文件（上传的文件）
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ===== 路由 =====

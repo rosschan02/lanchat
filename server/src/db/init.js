@@ -52,7 +52,7 @@ function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       from_user_id INTEGER NOT NULL,
       to_user_id INTEGER DEFAULT 0,
-      type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image')),
+      type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file')),
       content TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now', 'localtime')),
       FOREIGN KEY (from_user_id) REFERENCES users(id)
@@ -65,6 +65,13 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
   `);
+
+    // 迁移：为 messages 表添加 is_revoked 字段（如果不存在）
+    const columns = db.prepare("PRAGMA table_info(messages)").all();
+    if (!columns.find(c => c.name === 'is_revoked')) {
+        db.exec('ALTER TABLE messages ADD COLUMN is_revoked INTEGER DEFAULT 0');
+        console.log('✅ 已添加 is_revoked 字段');
+    }
 
     // 创建默认管理员账号（如果不存在）
     const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get(config.admin.username);

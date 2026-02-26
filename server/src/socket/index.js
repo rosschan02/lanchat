@@ -5,7 +5,7 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { getDb } = require('../db/init');
-const { saveMessage } = require('./chat');
+const { saveMessage, revokeMessage, getMessage } = require('./chat');
 const {
     userOnline, userOfflineBySocketId,
     getOnlineUsers, getUserSocketId,
@@ -77,6 +77,25 @@ function initSocket(io) {
             // 保存消息到数据库
             const message = saveMessage(user.id, to || 0, type, content);
 
+            // 检测 @提及
+            if (type === 'text' && content.includes('@')) {
+                const allUsers = getDb().prepare('SELECT id, nickname FROM users').all();
+                const mentionedUsers = allUsers.filter(u =>
+                    content.includes(`@${u.nickname}`) && u.id !== user.id
+                );
+
+                mentionedUsers.forEach(mentionedUser => {
+                    const mentionSocketId = getUserSocketId(mentionedUser.id);
+                    if (mentionSocketId) {
+                        io.to(mentionSocketId).emit('chat:mentioned', {
+                            messageId: message.id,
+                            from: user.nickname,
+                            chatId: to || 0,
+                        });
+                    }
+                });
+            }
+
             if (to === 0) {
                 // 群聊消息 - 广播所有人
                 io.emit('chat:message', message);
@@ -109,6 +128,45 @@ function initSocket(io) {
                         from: user.id,
                         fromNickname: user.nickname,
                     });
+                }
+            }
+        });
+
+        /**
+         * 撤回消息
+         * data: { messageId: number }
+         */
+        socket.on('chat:revoke', (data) => {
+            const { messageId } = data;
+            const message = getMessage(messageId);
+            if (!message) return;
+
+            // 校验权限：自己的消息 2 分钟内，或管理员无限制
+            const isOwner = message.from_user_id === user.id;
+            const isAdmin = user.role === 'admin';
+            const withinTimeLimit = (Date.now() - new Date(message.created_at).getTime()) < 2 * 60 * 1000;
+
+            if (!isOwner && !isAdmin) return;
+            if (isOwner && !isAdmin && !withinTimeLimit) return;
+
+            revokeMessage(messageId);
+
+            const revokeEvent = {
+                messageId,
+                revokedBy: user.nickname,
+                chatId: message.to_user_id,
+            };
+
+            if (message.to_user_id === 0) {
+                io.emit('chat:revoked', revokeEvent);
+            } else {
+                const targetSocketId = getUserSocketId(message.to_user_id);
+                if (targetSocketId) {
+                    io.to(targetSocketId).emit('chat:revoked', revokeEvent);
+                }
+                const fromSocketId = getUserSocketId(message.from_user_id);
+                if (fromSocketId) {
+                    io.to(fromSocketId).emit('chat:revoked', revokeEvent);
                 }
             }
         });

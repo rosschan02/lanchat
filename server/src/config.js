@@ -22,9 +22,9 @@ module.exports = {
 
   // 上传文件配置
   upload: {
-    // 最大文件大小 10MB
-    maxSize: 10 * 1024 * 1024,
-    // 允许的图片类型
-    allowedTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'],
+    // 最大文件大小 50MB
+    maxSize: 50 * 1024 * 1024,
+    // 禁止上传的文件扩展名
+    blockedExtensions: ['.exe', '.bat', '.sh', '.cmd', '.msi', '.dll', '.com', '.vbs', '.ps1'],
   },
 };

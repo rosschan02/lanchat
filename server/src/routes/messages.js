@@ -20,7 +20,7 @@ router.get('/group', (req, res) => {
 
     const db = getDb();
     const messages = db.prepare(`
-    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at,
+    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at, m.is_revoked,
            u.username as from_username, u.nickname as from_nickname, u.avatar as from_avatar
     FROM messages m
     LEFT JOIN users u ON m.from_user_id = u.id
@@ -45,7 +45,7 @@ router.get('/private/:userId', (req, res) => {
 
     const db = getDb();
     const messages = db.prepare(`
-    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at,
+    SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at, m.is_revoked,
            u.username as from_username, u.nickname as from_nickname, u.avatar as from_avatar
     FROM messages m
     LEFT JOIN users u ON m.from_user_id = u.id
@@ -56,6 +56,61 @@ router.get('/private/:userId', (req, res) => {
   `).all(currentUserId, userId, userId, currentUserId, limit, offset);
 
     res.json({ messages: messages.reverse() });
+});
+
+/**
+ * GET /api/messages/search - 搜索消息
+ * Query: { keyword, chatId (optional), page, pageSize }
+ */
+router.get('/search', (req, res) => {
+    const { keyword, chatId, page = 1, pageSize = 20 } = req.query;
+    const currentUserId = req.user.id;
+
+    if (!keyword || !keyword.trim()) {
+        return res.status(400).json({ error: '请输入搜索关键词' });
+    }
+
+    const db = getDb();
+    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const limit = parseInt(pageSize);
+    const likePattern = `%${keyword.trim()}%`;
+
+    let whereClause = "m.type = 'text' AND m.is_revoked = 0 AND m.content LIKE ?";
+    const params = [likePattern];
+
+    if (chatId !== undefined && chatId !== '') {
+        const cid = parseInt(chatId);
+        if (cid === 0) {
+            whereClause += ' AND m.to_user_id = 0';
+        } else {
+            whereClause += ' AND ((m.from_user_id = ? AND m.to_user_id = ?) OR (m.from_user_id = ? AND m.to_user_id = ?))';
+            params.push(currentUserId, cid, cid, currentUserId);
+        }
+    } else {
+        whereClause += ' AND (m.to_user_id = 0 OR m.from_user_id = ? OR m.to_user_id = ?)';
+        params.push(currentUserId, currentUserId);
+    }
+
+    const countResult = db.prepare(
+        `SELECT COUNT(*) as total FROM messages m WHERE ${whereClause}`
+    ).get(...params);
+
+    const messages = db.prepare(`
+        SELECT m.id, m.from_user_id, m.to_user_id, m.type, m.content, m.created_at,
+               u.username as from_username, u.nickname as from_nickname
+        FROM messages m
+        LEFT JOIN users u ON m.from_user_id = u.id
+        WHERE ${whereClause}
+        ORDER BY m.created_at DESC
+        LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+
+    res.json({
+        messages: messages.reverse(),
+        total: countResult.total,
+        page: parseInt(page),
+        pageSize: limit,
+    });
 });
 
 module.exports = router;
