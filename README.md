@@ -13,12 +13,34 @@
 - 📜 聊天记录持久化
 - 👨‍💼 后台用户管理（管理员）
 
+## 技术栈
+
+### 客户端
+| 技术 | 版本 |
+|------|------|
+| Vue | 3.5.x |
+| Vite | 6.x |
+| Electron | 35.x |
+| Element Plus | 2.13.x |
+| Pinia | 2.3.x |
+| Axios | 1.8.x |
+| Socket.IO Client | 4.8.x |
+
+### 服务端
+| 技术 | 版本 |
+|------|------|
+| Express | 4.21.x |
+| Socket.IO | 4.8.x |
+| better-sqlite3 | 12.x |
+| JSON Web Token | 9.x |
+
 ## 项目结构
 
 ```
 lanchat/
 ├── server/     # 服务端 (Node.js + Express + Socket.IO + SQLite)
 ├── client/     # 客户端 (Electron + Vue 3 + Element Plus)
+├── CHANGELOG.md
 └── README.md
 ```
 
