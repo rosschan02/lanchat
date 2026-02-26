@@ -26,8 +26,8 @@ function getDb() {
 }
 
 /**
- * 确保 messages 表结构支持 file 类型消息
- * 兼容早期版本的 CHECK(type IN ('text', 'image'))
+ * 确保 messages 表结构支持 file 类型消息和频道字段
+ * 兼容早期版本 schema
  */
 function ensureMessagesTableSchema(db) {
     const table = db.prepare(
@@ -42,6 +42,7 @@ function ensureMessagesTableSchema(db) {
 
     const columns = db.prepare("PRAGMA table_info(messages)").all();
     const hasIsRevoked = columns.some((column) => column.name === 'is_revoked');
+    const hasChannelId = columns.some((column) => column.name === 'channel_id');
 
     // 旧表约束不支持 file，执行重建迁移
     if (!supportsFileType) {
@@ -55,13 +56,15 @@ function ensureMessagesTableSchema(db) {
                   content TEXT NOT NULL,
                   created_at TEXT DEFAULT (datetime('now', 'localtime')),
                   is_revoked INTEGER DEFAULT 0,
+                  channel_id INTEGER DEFAULT NULL,
                   FOREIGN KEY (from_user_id) REFERENCES users(id)
                 )
             `);
 
             const isRevokedExpr = hasIsRevoked ? 'COALESCE(is_revoked, 0)' : '0';
+            const channelIdExpr = hasChannelId ? 'channel_id' : 'NULL';
             db.exec(`
-                INSERT INTO messages_new (id, from_user_id, to_user_id, type, content, created_at, is_revoked)
+                INSERT INTO messages_new (id, from_user_id, to_user_id, type, content, created_at, is_revoked, channel_id)
                 SELECT id,
                        from_user_id,
                        COALESCE(to_user_id, 0),
@@ -71,7 +74,8 @@ function ensureMessagesTableSchema(db) {
                        END,
                        content,
                        created_at,
-                       ${isRevokedExpr}
+                       ${isRevokedExpr},
+                       ${channelIdExpr}
                 FROM messages
             `);
 
@@ -88,6 +92,11 @@ function ensureMessagesTableSchema(db) {
     if (!hasIsRevoked) {
         db.exec('ALTER TABLE messages ADD COLUMN is_revoked INTEGER DEFAULT 0');
         console.log('✅ 已添加 is_revoked 字段');
+    }
+
+    if (!hasChannelId) {
+        db.exec('ALTER TABLE messages ADD COLUMN channel_id INTEGER DEFAULT NULL');
+        console.log('✅ 已添加 channel_id 字段');
     }
 }
 
@@ -122,7 +131,34 @@ function initDatabase() {
       content TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now', 'localtime')),
       is_revoked INTEGER DEFAULT 0,
+      channel_id INTEGER DEFAULT NULL,
       FOREIGN KEY (from_user_id) REFERENCES users(id)
+    )
+  `);
+
+    // 创建频道表
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS channels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      created_by INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    )
+  `);
+
+    // 创建频道成员关系表
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS channel_members (
+      channel_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      added_by INTEGER NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      PRIMARY KEY (channel_id, user_id),
+      FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id),
+      FOREIGN KEY (added_by) REFERENCES users(id)
     )
   `);
 
@@ -134,6 +170,8 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members(user_id);
   `);
 
     // 创建默认管理员账号（如果不存在）

@@ -35,6 +35,43 @@ function isValidFileMessageContent(content) {
     }
 }
 
+function parseChannelId(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+    const parsed = parseInt(value, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        return null;
+    }
+    return parsed;
+}
+
+function getChannelMemberIds(db, channelId) {
+    return db.prepare(`
+        SELECT user_id
+        FROM channel_members
+        WHERE channel_id = ?
+    `).all(channelId).map((row) => row.user_id);
+}
+
+function isUserInChannel(db, channelId, userId) {
+    return !!db.prepare(`
+        SELECT 1
+        FROM channel_members
+        WHERE channel_id = ? AND user_id = ?
+        LIMIT 1
+    `).get(channelId, userId);
+}
+
+function emitToUsers(io, userIds, event, payload) {
+    userIds.forEach((userId) => {
+        const socketId = getUserSocketId(userId);
+        if (socketId) {
+            io.to(socketId).emit(event, payload);
+        }
+    });
+}
+
 /**
  * 初始化 Socket.IO 事件处理
  */
@@ -90,13 +127,15 @@ function initSocket(io) {
 
         /**
          * 接收聊天消息
-         * data: { to: number, type: 'text'|'image'|'file', content: string }
+         * data: { to: number, type: 'text'|'image'|'file', content: string, channelId?: number }
          * to=0 表示群聊
          */
         socket.on('chat:message', (data, ack) => {
             const to = Number.isInteger(data?.to) ? data.to : parseInt(data?.to, 10) || 0;
             const type = typeof data?.type === 'string' ? data.type.trim() : '';
             const content = typeof data?.content === 'string' ? data.content : '';
+            const channelId = parseChannelId(data?.channelId);
+            const db = getDb();
 
             if (!ALLOWED_MESSAGE_TYPES.has(type) || !content.trim()) {
                 replyAck(ack, { ok: false, error: '消息格式不合法' });
@@ -110,11 +149,19 @@ function initSocket(io) {
                 replyAck(ack, { ok: false, error: '文件消息格式不合法' });
                 return;
             }
+            if (channelId && to !== 0) {
+                replyAck(ack, { ok: false, error: '频道消息目标不合法' });
+                return;
+            }
+            if (channelId && !isUserInChannel(db, channelId, user.id)) {
+                replyAck(ack, { ok: false, error: '你不在该频道中' });
+                return;
+            }
 
             let message;
             try {
                 // 保存消息到数据库
-                message = saveMessage(user.id, to, type, content);
+                message = saveMessage(user.id, to, type, content, channelId);
             } catch (err) {
                 console.error('保存消息失败:', err);
                 replyAck(ack, { ok: false, error: '消息保存失败' });
@@ -124,7 +171,14 @@ function initSocket(io) {
 
             // 检测 @提及
             if (type === 'text' && content.includes('@')) {
-                const allUsers = getDb().prepare('SELECT id, nickname FROM users').all();
+                const allUsers = channelId
+                    ? db.prepare(`
+                        SELECT u.id, u.nickname
+                        FROM users u
+                        INNER JOIN channel_members cm ON cm.user_id = u.id
+                        WHERE cm.channel_id = ?
+                    `).all(channelId)
+                    : db.prepare('SELECT id, nickname FROM users').all();
                 const mentionedUsers = allUsers.filter(u =>
                     content.includes(`@${u.nickname}`) && u.id !== user.id
                 );
@@ -135,13 +189,16 @@ function initSocket(io) {
                         io.to(mentionSocketId).emit('chat:mentioned', {
                             messageId: message.id,
                             from: user.nickname,
-                            chatId: to || 0,
+                            chatId: channelId ? `channel:${channelId}` : (to || 0),
                         });
                     }
                 });
             }
 
-            if (to === 0) {
+            if (channelId) {
+                const memberIds = getChannelMemberIds(db, channelId);
+                emitToUsers(io, memberIds, 'chat:message', message);
+            } else if (to === 0) {
                 // 群聊消息 - 广播所有人
                 io.emit('chat:message', message);
             } else {
@@ -159,11 +216,24 @@ function initSocket(io) {
 
         /**
          * 正在输入提示
-         * data: { to: number }
+         * data: { to: number, channelId?: number }
          */
         socket.on('chat:typing', (data) => {
-            const { to } = data;
-            if (to === 0) {
+            const to = Number.isInteger(data?.to) ? data.to : parseInt(data?.to, 10) || 0;
+            const channelId = parseChannelId(data?.channelId);
+            const db = getDb();
+
+            if (channelId) {
+                if (!isUserInChannel(db, channelId, user.id)) {
+                    return;
+                }
+                const members = getChannelMemberIds(db, channelId).filter((id) => id !== user.id);
+                emitToUsers(io, members, 'chat:typing', {
+                    from: user.id,
+                    fromNickname: user.nickname,
+                    channelId,
+                });
+            } else if (to === 0) {
                 socket.broadcast.emit('chat:typing', {
                     from: user.id,
                     fromNickname: user.nickname,
@@ -201,10 +271,13 @@ function initSocket(io) {
             const revokeEvent = {
                 messageId,
                 revokedBy: user.nickname,
-                chatId: message.to_user_id,
+                chatId: message.channel_id ? `channel:${message.channel_id}` : message.to_user_id,
             };
 
-            if (message.to_user_id === 0) {
+            if (message.channel_id) {
+                const memberIds = getChannelMemberIds(getDb(), message.channel_id);
+                emitToUsers(io, memberIds, 'chat:revoked', revokeEvent);
+            } else if (message.to_user_id === 0) {
                 io.emit('chat:revoked', revokeEvent);
             } else {
                 const targetSocketId = getUserSocketId(message.to_user_id);

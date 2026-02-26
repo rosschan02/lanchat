@@ -20,12 +20,12 @@
     <div class="main-body">
       <div class="sidebar">
         <div class="sidebar-header">
-          <span>在线用户 ({{ chatStore.onlineUsers.length }})</span>
+          <span>频道 ({{ chatStore.channels.length }})</span>
         </div>
 
         <div
           class="user-item"
-          :class="{ active: chatStore.currentChat.id === 0 }"
+          :class="{ active: chatStore.currentChat.id === '0' }"
           @click="switchToGroup"
         >
           <span class="status-dot online"></span>
@@ -33,18 +33,40 @@
           <el-badge
             v-if="groupBadge"
             :value="groupBadge"
-            :type="chatStore.mentionCount[0] ? 'warning' : 'danger'"
+            :type="chatStore.mentionCount['0'] ? 'warning' : 'danger'"
           />
         </div>
 
+        <div class="user-list" style="max-height: 180px; overflow-y: auto">
+          <div
+            v-for="channel in chatStore.channels"
+            :key="channel.id"
+            class="user-item"
+            :class="{ active: chatStore.currentChat.id === toChannelChatId(channel.id) }"
+            @click="switchToChannel(channel)"
+          >
+            <span class="status-dot online"></span>
+            <span class="user-name"># {{ channel.name }}</span>
+            <el-badge
+              v-if="getChatBadge(toChannelChatId(channel.id))"
+              :value="getChatBadge(toChannelChatId(channel.id))"
+              :type="chatStore.mentionCount[toChannelChatId(channel.id)] ? 'warning' : 'danger'"
+            />
+          </div>
+        </div>
+
         <el-divider style="margin: 4px 0" />
+
+        <div class="sidebar-header">
+          <span>在线用户 ({{ chatStore.onlineUsers.length }})</span>
+        </div>
 
         <div class="user-list" style="flex: 1; overflow-y: auto">
           <div
             v-for="user in chatStore.onlineUsers"
             :key="user.id"
             class="user-item"
-            :class="{ active: chatStore.currentChat.id === user.id }"
+            :class="{ active: chatStore.currentChat.id === String(user.id) }"
             @click="switchToPrivate(user)"
           >
             <span class="status-dot online"></span>
@@ -52,7 +74,7 @@
             <el-badge
               v-if="getChatBadge(user.id)"
               :value="getChatBadge(user.id)"
-              :type="chatStore.mentionCount[user.id] ? 'warning' : 'danger'"
+              :type="chatStore.mentionCount[String(user.id)] ? 'warning' : 'danger'"
             />
           </div>
         </div>
@@ -241,7 +263,7 @@ import { ElMessage } from 'element-plus';
 import dayjs from 'dayjs';
 import { useUserStore } from '@/stores/user';
 import { useChatStore } from '@/stores/chat';
-import { messageAPI, uploadAPI, getServerUrl } from '@/services/api';
+import { messageAPI, uploadAPI, getServerUrl, channelAPI } from '@/services/api';
 import { connectSocket, disconnectSocket, sendMessage, sendTyping, revokeMessage } from '@/services/socket';
 import EmojiPicker from '@/components/EmojiPicker.vue';
 
@@ -276,6 +298,35 @@ const searchResults = ref([]);
 let searchTimer = null;
 
 const canSend = computed(() => inputText.value.trim() || screenshotPreview.value);
+const GROUP_CHAT_KEY = '0';
+
+function toChannelChatId(channelId) {
+  return `channel:${channelId}`;
+}
+
+function parseChannelChatId(chatId) {
+  const value = String(chatId || '');
+  if (!value.startsWith('channel:')) return null;
+  const id = parseInt(value.slice('channel:'.length), 10);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function resolveChatKeyFromMessage(message) {
+  if (message.channel_id) {
+    return toChannelChatId(message.channel_id);
+  }
+  if (message.to_user_id === 0) {
+    return GROUP_CHAT_KEY;
+  }
+  return String(message.from_user_id === userStore.userId ? message.to_user_id : message.from_user_id);
+}
+
+function getSendPayload() {
+  if (chatStore.currentChat.type === 'channel' && chatStore.currentChat.channelId) {
+    return { to: 0, options: { channelId: chatStore.currentChat.channelId } };
+  }
+  return { to: Number(chatStore.currentChat.id), options: {} };
+}
 
 const filteredMentionUsers = computed(() => {
   const q = mentionQuery.value.trim().toLowerCase();
@@ -286,13 +337,14 @@ const filteredMentionUsers = computed(() => {
 });
 
 const groupBadge = computed(() => {
-  if (chatStore.mentionCount[0]) return '@';
-  return chatStore.unreadCount[0] || '';
+  if (chatStore.mentionCount[GROUP_CHAT_KEY]) return '@';
+  return chatStore.unreadCount[GROUP_CHAT_KEY] || '';
 });
 
 function getChatBadge(chatId) {
-  if (chatStore.mentionCount[chatId]) return '@';
-  return chatStore.unreadCount[chatId] || '';
+  const key = String(chatId);
+  if (chatStore.mentionCount[key]) return '@';
+  return chatStore.unreadCount[key] || '';
 }
 
 onMounted(async () => {
@@ -314,9 +366,7 @@ onMounted(async () => {
   });
 
   socket.on('chat:message', (message) => {
-    const chatId = message.to_user_id === 0
-      ? 0
-      : (message.from_user_id === userStore.userId ? message.to_user_id : message.from_user_id);
+    const chatId = resolveChatKeyFromMessage(message);
 
     chatStore.addMessage(chatId, message);
 
@@ -333,8 +383,15 @@ onMounted(async () => {
     scrollToBottom();
   });
 
-  socket.on('chat:typing', ({ from, fromNickname }) => {
-    if (chatStore.currentChat.id === from || chatStore.currentChat.id === 0) {
+  socket.on('chat:typing', ({ from, fromNickname, channelId }) => {
+    if (channelId) {
+      if (chatStore.currentChat.type === 'channel' && chatStore.currentChat.channelId === channelId) {
+        chatStore.setTyping(fromNickname);
+      }
+      return;
+    }
+
+    if (chatStore.currentChat.id === String(from) || chatStore.currentChat.id === GROUP_CHAT_KEY) {
       chatStore.setTyping(fromNickname);
     }
   });
@@ -345,13 +402,18 @@ onMounted(async () => {
   });
 
   socket.on('chat:mentioned', ({ from, chatId }) => {
-    chatStore.incrementMention(chatId);
-    if (chatId !== chatStore.currentChat.id) {
-      chatStore.incrementUnread(chatId);
+    const key = String(chatId);
+    chatStore.incrementMention(key);
+    if (key !== chatStore.currentChat.id) {
+      chatStore.incrementUnread(key);
     }
     if (window.electronAPI) {
       window.electronAPI.notification.show('LanChat @提醒', `${from} 提到了你`);
     }
+  });
+
+  socket.on('channel:updated', async () => {
+    await loadChannels();
   });
 
   if (window.electronAPI) {
@@ -360,7 +422,8 @@ onMounted(async () => {
     });
   }
 
-  await loadMessages(0);
+  await loadChannels();
+  await loadMessages(GROUP_CHAT_KEY);
 });
 
 onBeforeUnmount(() => {
@@ -382,13 +445,33 @@ watch(
   }
 );
 
+async function loadChannels() {
+  try {
+    const result = await channelAPI.getMyChannels();
+    chatStore.setChannels(result.channels || []);
+
+    if (chatStore.currentChat.type === 'channel') {
+      const exists = chatStore.channels.some((c) => c.id === chatStore.currentChat.channelId);
+      if (!exists) {
+        switchToGroup();
+      }
+    }
+  } catch (err) {
+    console.error('加载频道失败:', err);
+  }
+}
+
 async function loadMessages(chatId) {
   try {
     let result;
-    if (chatId === 0) {
+    if (chatId === GROUP_CHAT_KEY) {
       result = await messageAPI.getGroupMessages();
+    } else if (String(chatId).startsWith('channel:')) {
+      const channelId = parseChannelChatId(chatId);
+      if (!channelId) return;
+      result = await messageAPI.getChannelMessages(channelId);
     } else {
-      result = await messageAPI.getPrivateMessages(chatId);
+      result = await messageAPI.getPrivateMessages(parseInt(chatId, 10));
     }
     chatStore.setMessages(chatId, result.messages);
     await nextTick();
@@ -399,11 +482,15 @@ async function loadMessages(chatId) {
 }
 
 function switchToGroup() {
-  chatStore.switchChat(0, '群聊', 'group');
+  chatStore.switchChat(GROUP_CHAT_KEY, '群聊', 'group');
 }
 
 function switchToPrivate(user) {
-  chatStore.switchChat(user.id, user.nickname, 'private');
+  chatStore.switchChat(String(user.id), user.nickname, 'private');
+}
+
+function switchToChannel(channel) {
+  chatStore.switchChat(toChannelChatId(channel.id), `# ${channel.name}`, 'channel', { channelId: channel.id });
 }
 
 async function handleSend() {
@@ -412,7 +499,8 @@ async function handleSend() {
   }
 
   if (inputText.value.trim()) {
-    sendMessage(chatStore.currentChat.id, 'text', inputText.value.trim());
+    const payload = getSendPayload();
+    sendMessage(payload.to, 'text', inputText.value.trim(), payload.options);
     inputText.value = '';
     showMentionPanel.value = false;
     showEmoji.value = false;
@@ -426,7 +514,8 @@ async function sendScreenshot() {
     const file = new File([blob], `screenshot_${Date.now()}.png`, { type: 'image/png' });
 
     const result = await uploadAPI.uploadFile(file);
-    sendMessage(chatStore.currentChat.id, 'image', result.url);
+    const payload = getSendPayload();
+    sendMessage(payload.to, 'image', result.url, payload.options);
     screenshotPreview.value = null;
   } catch (err) {
     ElMessage.error('截图发送失败');
@@ -445,7 +534,8 @@ function handleInput(e) {
   handleMentionDetect(e.target.value, e.target.selectionStart || 0);
 
   if (typingTimer) return;
-  sendTyping(chatStore.currentChat.id);
+  const payload = getSendPayload();
+  sendTyping(payload.to, payload.options);
   typingTimer = setTimeout(() => {
     typingTimer = null;
   }, 2000);
@@ -510,7 +600,8 @@ async function handleImageSelected(e) {
 
   try {
     const result = await uploadAPI.uploadFile(file);
-    sendMessage(chatStore.currentChat.id, 'image', result.url);
+    const payload = getSendPayload();
+    sendMessage(payload.to, 'image', result.url, payload.options);
   } catch (err) {
     ElMessage.error('图片上传失败');
   }
@@ -535,7 +626,8 @@ async function handleFileSelected(e) {
       url: result.url,
       size: result.size || file.size,
     });
-    sendMessage(chatStore.currentChat.id, 'file', payload);
+    const sendPayload = getSendPayload();
+    sendMessage(sendPayload.to, 'file', payload, sendPayload.options);
   } catch (err) {
     ElMessage.error('文件上传失败');
   }
@@ -668,8 +760,12 @@ function handleSearchInput() {
 async function doSearch() {
   searchLoading.value = true;
   try {
-    const chatId = searchScope.value === 'current' ? chatStore.currentChat.id : undefined;
-    const result = await messageAPI.searchMessages(searchKeyword.value.trim(), chatId, 1, 20);
+    const currentIsChannel = searchScope.value === 'current' && chatStore.currentChat.type === 'channel';
+    const chatId = searchScope.value === 'current' && !currentIsChannel
+      ? chatStore.currentChat.id
+      : undefined;
+    const channelId = currentIsChannel ? chatStore.currentChat.channelId : undefined;
+    const result = await messageAPI.searchMessages(searchKeyword.value.trim(), chatId, 1, 20, channelId);
     searchResults.value = result.messages || [];
   } catch (err) {
     ElMessage.error('消息搜索失败');
@@ -688,15 +784,31 @@ function highlightKeyword(content) {
 }
 
 async function scrollToMessage(item) {
-  const chatId = item.to_user_id === 0
-    ? 0
-    : (item.from_user_id === userStore.userId ? item.to_user_id : item.from_user_id);
+  const chatId = item.channel_id
+    ? toChannelChatId(item.channel_id)
+    : (item.to_user_id === 0
+      ? GROUP_CHAT_KEY
+      : String(item.from_user_id === userStore.userId ? item.to_user_id : item.from_user_id));
 
-  if (chatId === 0) {
+  if (chatId === GROUP_CHAT_KEY) {
     switchToGroup();
+  } else if (String(chatId).startsWith('channel:')) {
+    const channelId = parseChannelChatId(chatId);
+    const target = chatStore.channels.find((c) => c.id === channelId);
+    if (target) {
+      switchToChannel(target);
+    } else {
+      await loadChannels();
+      const latest = chatStore.channels.find((c) => c.id === channelId);
+      if (!latest) {
+        ElMessage.warning('你已不在该频道中');
+        return;
+      }
+      switchToChannel(latest);
+    }
   } else {
-    const target = chatStore.onlineUsers.find((u) => u.id === chatId);
-    chatStore.switchChat(chatId, target?.nickname || `用户${chatId}`, 'private');
+    const target = chatStore.onlineUsers.find((u) => String(u.id) === String(chatId));
+    chatStore.switchChat(String(chatId), target?.nickname || `用户${chatId}`, 'private');
   }
 
   if (!chatStore.messagesMap[chatId]) {

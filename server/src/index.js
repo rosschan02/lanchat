@@ -16,6 +16,7 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const messageRoutes = require('./routes/messages');
 const uploadRoutes = require('./routes/upload');
+const channelRoutes = require('./routes/channels');
 
 // 创建 Express 应用
 const app = express();
@@ -44,6 +45,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/channels', channelRoutes);
 
 // 健康检查
 app.get('/api/health', (req, res) => {
@@ -63,6 +65,7 @@ initDatabase();
 
 // 初始化 Socket.IO
 initSocket(io);
+app.set('io', io);
 
 // 启动服务器
 server.listen(config.port, '0.0.0.0', () => {

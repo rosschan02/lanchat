@@ -113,7 +113,14 @@ router.delete('/:id', (req, res) => {
         return res.status(400).json({ error: '不能删除当前登录的管理员账号' });
     }
 
-    db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    db.transaction(() => {
+        // 清理频道成员关系，避免外键约束失败
+        db.prepare('DELETE FROM channel_members WHERE user_id = ?').run(id);
+        // 若该用户创建过频道，转交给当前管理员，保证历史可追溯
+        db.prepare('UPDATE channels SET created_by = ?, updated_at = datetime(\'now\', \'localtime\') WHERE created_by = ?')
+            .run(req.user.id, id);
+        db.prepare('DELETE FROM users WHERE id = ?').run(id);
+    })();
     res.json({ message: '用户已删除' });
 });
 

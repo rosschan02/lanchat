@@ -57,9 +57,9 @@ export function getSocket() {
 /**
  * 发送聊天消息
  */
-export function sendMessage(to, type, content) {
+export function sendMessage(to, type, content, options = {}) {
     if (socket && socket.connected) {
-        socket.emit('chat:message', { to, type, content });
+        socket.emit('chat:message', { to, type, content, channelId: options.channelId });
     }
 }
 
@@ -75,8 +75,8 @@ export function revokeMessage(messageId) {
 /**
  * 发送正在输入提示
  */
-export function sendTyping(to) {
+export function sendTyping(to, options = {}) {
     if (socket && socket.connected) {
-        socket.emit('chat:typing', { to });
+        socket.emit('chat:typing', { to, channelId: options.channelId });
     }
 }

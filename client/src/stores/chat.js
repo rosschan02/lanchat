@@ -7,8 +7,10 @@ export const useChatStore = defineStore('chat', {
     state: () => ({
         // 在线用户列表
         onlineUsers: [],
-        // 当前聊天对象 (0 = 群聊, userId = 私聊)
-        currentChat: { id: 0, name: '群聊', type: 'group' },
+        // 我加入的频道
+        channels: [],
+        // 当前聊天对象 (0 = 群聊, userId = 私聊, channel:* = 频道)
+        currentChat: { id: '0', name: '群聊', type: 'group' },
         // 消息列表 (按聊天对象分组): { [chatId]: Message[] }
         messagesMap: {},
         // 未读消息计数: { [chatId]: number }
@@ -21,7 +23,7 @@ export const useChatStore = defineStore('chat', {
     getters: {
         // 当前聊天的消息列表
         currentMessages: (state) => {
-            return state.messagesMap[state.currentChat.id] || [];
+            return state.messagesMap[String(state.currentChat.id)] || [];
         },
         // 总未读数
         totalUnread: (state) => {
@@ -35,6 +37,10 @@ export const useChatStore = defineStore('chat', {
          */
         setOnlineUsers(users) {
             this.onlineUsers = users;
+        },
+
+        setChannels(channels) {
+            this.channels = channels;
         },
 
         /**
@@ -56,14 +62,15 @@ export const useChatStore = defineStore('chat', {
         /**
          * 切换聊天对象
          */
-        switchChat(chatId, name, type = 'private') {
-            this.currentChat = { id: chatId, name, type };
+        switchChat(chatId, name, type = 'private', extra = {}) {
+            const key = String(chatId);
+            this.currentChat = { id: key, name, type, ...extra };
             // 清除该聊天的未读计数
-            if (this.unreadCount[chatId]) {
-                this.unreadCount[chatId] = 0;
+            if (this.unreadCount[key]) {
+                this.unreadCount[key] = 0;
             }
-            if (this.mentionCount[chatId]) {
-                this.mentionCount[chatId] = 0;
+            if (this.mentionCount[key]) {
+                this.mentionCount[key] = 0;
             }
         },
 
@@ -71,20 +78,21 @@ export const useChatStore = defineStore('chat', {
          * 设置历史消息
          */
         setMessages(chatId, messages) {
-            this.messagesMap[chatId] = messages;
+            this.messagesMap[String(chatId)] = messages;
         },
 
         /**
          * 添加新消息
          */
         addMessage(chatId, message) {
-            if (!this.messagesMap[chatId]) {
-                this.messagesMap[chatId] = [];
+            const key = String(chatId);
+            if (!this.messagesMap[key]) {
+                this.messagesMap[key] = [];
             }
             // 避免重复消息
-            const exists = this.messagesMap[chatId].find(m => m.id === message.id);
+            const exists = this.messagesMap[key].find(m => m.id === message.id);
             if (!exists) {
-                this.messagesMap[chatId].push(message);
+                this.messagesMap[key].push(message);
             }
         },
 
@@ -102,17 +110,19 @@ export const useChatStore = defineStore('chat', {
          * 增加未读计数
          */
         incrementUnread(chatId) {
-            if (!this.unreadCount[chatId]) {
-                this.unreadCount[chatId] = 0;
+            const key = String(chatId);
+            if (!this.unreadCount[key]) {
+                this.unreadCount[key] = 0;
             }
-            this.unreadCount[chatId]++;
+            this.unreadCount[key]++;
         },
 
         incrementMention(chatId) {
-            if (!this.mentionCount[chatId]) {
-                this.mentionCount[chatId] = 0;
+            const key = String(chatId);
+            if (!this.mentionCount[key]) {
+                this.mentionCount[key] = 0;
             }
-            this.mentionCount[chatId]++;
+            this.mentionCount[key]++;
         },
 
         /**
@@ -131,7 +141,8 @@ export const useChatStore = defineStore('chat', {
          */
         reset() {
             this.onlineUsers = [];
-            this.currentChat = { id: 0, name: '群聊', type: 'group' };
+            this.channels = [];
+            this.currentChat = { id: '0', name: '群聊', type: 'group' };
             this.messagesMap = {};
             this.unreadCount = {};
             this.mentionCount = {};

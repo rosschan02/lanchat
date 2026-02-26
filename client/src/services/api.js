@@ -73,13 +73,27 @@ export const messageAPI = {
         api.get('/api/messages/group', { params: { limit, offset } }),
     getPrivateMessages: (userId, limit = 50, offset = 0) =>
         api.get(`/api/messages/private/${userId}`, { params: { limit, offset } }),
-    searchMessages: (keyword, chatId, page = 1, pageSize = 20) => {
+    getChannelMessages: (channelId, limit = 50, offset = 0) =>
+        api.get(`/api/messages/channel/${channelId}`, { params: { limit, offset } }),
+    searchMessages: (keyword, chatId, page = 1, pageSize = 20, channelId) => {
         const params = { keyword, page, pageSize };
         if (chatId !== undefined && chatId !== null && chatId !== '') {
             params.chatId = chatId;
         }
+        if (channelId !== undefined && channelId !== null && channelId !== '') {
+            params.channelId = channelId;
+        }
         return api.get('/api/messages/search', { params });
     },
+};
+
+// ===== 频道接口 =====
+
+export const channelAPI = {
+    getMyChannels: () => api.get('/api/channels'),
+    getAdminChannels: () => api.get('/api/channels/admin'),
+    createChannel: (data) => api.post('/api/channels', data),
+    updateChannel: (id, data) => api.put(`/api/channels/${id}`, data),
 };
 
 // ===== 文件上传 =====
