@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 
 const overlayRef = ref(null);
 const bgCanvas = ref(null);
@@ -46,6 +46,7 @@ const maskCanvas = ref(null);
 const screenImage = ref(null);
 const screenWidth = ref(0);
 const screenHeight = ref(0);
+const backgroundReady = ref(false);
 
 // 选取状态
 const isSelecting = ref(false);
@@ -86,21 +87,47 @@ const normalizedSelection = computed(() => {
   };
 });
 
-onMounted(() => {
+onMounted(async () => {
   // 聚焦以接收键盘事件
   overlayRef.value?.focus();
 
   // 监听来自主进程的截图数据
   if (window.electronAPI) {
     window.electronAPI.screenshot.onData((data) => {
-      screenImage.value = data.image;
-      screenWidth.value = data.width;
-      screenHeight.value = data.height;
-      drawBackground();
-      drawMask();
+      applyScreenshotData(data);
     });
+
+    // 主动拉取一次，避免 did-finish-load 早于页面监听导致数据丢失
+    try {
+      const data = await window.electronAPI.screenshot.getData?.();
+      applyScreenshotData(data);
+    } catch (err) {
+      console.error('获取截图数据失败:', err);
+    }
   }
+
+  window.addEventListener('resize', handleResize);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleResize);
+});
+
+function applyScreenshotData(data) {
+  if (!data?.image) return;
+
+  screenImage.value = data.image;
+  screenWidth.value = data.width;
+  screenHeight.value = data.height;
+  backgroundReady.value = false;
+  drawBackground();
+  drawMask();
+}
+
+function handleResize() {
+  drawBackground();
+  drawMask();
+}
 
 /**
  * 绘制背景截图
@@ -116,6 +143,7 @@ function drawBackground() {
   const img = new Image();
   img.onload = () => {
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    backgroundReady.value = true;
   };
   img.src = screenImage.value;
 }
@@ -152,6 +180,7 @@ function drawMask() {
 }
 
 function startSelection(e) {
+  if (!backgroundReady.value) return;
   if (selectionDone.value) return;
 
   isSelecting.value = true;

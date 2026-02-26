@@ -98,11 +98,17 @@ function createTray() {
 // ===== 截图功能 =====
 
 let screenshotWindow = null;
+let currentScreenshotData = null;
 
 /**
  * 启动截图流程
  */
 async function startScreenshot() {
+    if (screenshotWindow && !screenshotWindow.isDestroyed()) {
+        screenshotWindow.focus();
+        return;
+    }
+
     const { desktopCapturer, screen } = require('electron');
 
     // 隐藏主窗口（避免截到自己的窗口）
@@ -116,11 +122,13 @@ async function startScreenshot() {
         const primaryDisplay = screen.getPrimaryDisplay();
         const { width, height } = primaryDisplay.size;
         const scaleFactor = primaryDisplay.scaleFactor;
+        const captureWidth = Math.max(1, Math.floor(width * scaleFactor));
+        const captureHeight = Math.max(1, Math.floor(height * scaleFactor));
 
         // 捕获全屏
         const sources = await desktopCapturer.getSources({
             types: ['screen'],
-            thumbnailSize: { width: width * scaleFactor, height: height * scaleFactor },
+            thumbnailSize: { width: captureWidth, height: captureHeight },
         });
 
         if (sources.length === 0) {
@@ -128,7 +136,23 @@ async function startScreenshot() {
             return;
         }
 
-        const screenImage = sources[0].thumbnail.toDataURL();
+        // 优先匹配主显示器，避免多屏时拿错源
+        const source =
+            sources.find((item) => item.display_id === String(primaryDisplay.id)) ||
+            sources.find((item) => !item.thumbnail.isEmpty()) ||
+            sources[0];
+
+        if (!source || source.thumbnail.isEmpty()) {
+            throw new Error('未获取到可用的屏幕画面');
+        }
+
+        const screenImage = source.thumbnail.toDataURL();
+        currentScreenshotData = {
+            image: screenImage,
+            width,
+            height,
+            scaleFactor,
+        };
 
         // 创建全屏截图窗口
         screenshotWindow = new BrowserWindow({
@@ -156,24 +180,31 @@ async function startScreenshot() {
 
         // 截图窗口加载完成后发送屏幕截图数据
         screenshotWindow.webContents.on('did-finish-load', () => {
-            screenshotWindow.webContents.send('screenshot:data', {
-                image: screenImage,
-                width,
-                height,
-                scaleFactor,
-            });
+            if (screenshotWindow && currentScreenshotData) {
+                screenshotWindow.webContents.send('screenshot:data', currentScreenshotData);
+            }
         });
 
         screenshotWindow.on('closed', () => {
             screenshotWindow = null;
+            currentScreenshotData = null;
         });
     } catch (err) {
         console.error('截图失败:', err);
+        currentScreenshotData = null;
         if (mainWindow) mainWindow.show();
     }
 }
 
 // ===== IPC 事件处理 =====
+
+ipcMain.on('screenshot:start', () => {
+    startScreenshot();
+});
+
+ipcMain.handle('screenshot:getData', () => {
+    return currentScreenshotData;
+});
 
 // 截图完成（用户选取了区域）
 ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
@@ -181,6 +212,7 @@ ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
         screenshotWindow.close();
         screenshotWindow = null;
     }
+    currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
@@ -195,6 +227,7 @@ ipcMain.on('screenshot:cancel', () => {
         screenshotWindow.close();
         screenshotWindow = null;
     }
+    currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();

@@ -544,8 +544,8 @@ async function handleFileSelected(e) {
 }
 
 function triggerScreenshot() {
-  if (window.electronAPI) {
-    ElMessage.info('请使用快捷键 Ctrl+Shift+A 进行截图');
+  if (window.electronAPI?.screenshot?.start) {
+    window.electronAPI.screenshot.start();
   } else {
     ElMessage.warning('截图功能需要在桌面客户端中使用');
   }
