@@ -26,6 +26,72 @@ function getDb() {
 }
 
 /**
+ * 确保 messages 表结构支持 file 类型消息
+ * 兼容早期版本的 CHECK(type IN ('text', 'image'))
+ */
+function ensureMessagesTableSchema(db) {
+    const table = db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+    ).get();
+    if (!table || !table.sql) {
+        return;
+    }
+
+    const supportsFileType = /check\s*\(\s*type\s+in\s*\(\s*'text'\s*,\s*'image'\s*,\s*'file'\s*\)\s*\)/i
+        .test(table.sql);
+
+    const columns = db.prepare("PRAGMA table_info(messages)").all();
+    const hasIsRevoked = columns.some((column) => column.name === 'is_revoked');
+
+    // 旧表约束不支持 file，执行重建迁移
+    if (!supportsFileType) {
+        const migrate = db.transaction(() => {
+            db.exec(`
+                CREATE TABLE messages_new (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  from_user_id INTEGER NOT NULL,
+                  to_user_id INTEGER DEFAULT 0,
+                  type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file')),
+                  content TEXT NOT NULL,
+                  created_at TEXT DEFAULT (datetime('now', 'localtime')),
+                  is_revoked INTEGER DEFAULT 0,
+                  FOREIGN KEY (from_user_id) REFERENCES users(id)
+                )
+            `);
+
+            const isRevokedExpr = hasIsRevoked ? 'COALESCE(is_revoked, 0)' : '0';
+            db.exec(`
+                INSERT INTO messages_new (id, from_user_id, to_user_id, type, content, created_at, is_revoked)
+                SELECT id,
+                       from_user_id,
+                       COALESCE(to_user_id, 0),
+                       CASE
+                         WHEN type IN ('text', 'image', 'file') THEN type
+                         ELSE 'text'
+                       END,
+                       content,
+                       created_at,
+                       ${isRevokedExpr}
+                FROM messages
+            `);
+
+            db.exec('DROP TABLE messages');
+            db.exec('ALTER TABLE messages_new RENAME TO messages');
+        });
+
+        migrate();
+        console.log('✅ 已迁移 messages 表，支持 file 消息类型');
+        return;
+    }
+
+    // 新约束表但缺少撤回字段，补齐
+    if (!hasIsRevoked) {
+        db.exec('ALTER TABLE messages ADD COLUMN is_revoked INTEGER DEFAULT 0');
+        console.log('✅ 已添加 is_revoked 字段');
+    }
+}
+
+/**
  * 初始化数据库表结构
  */
 function initDatabase() {
@@ -55,9 +121,13 @@ function initDatabase() {
       type TEXT DEFAULT 'text' CHECK(type IN ('text', 'image', 'file')),
       content TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      is_revoked INTEGER DEFAULT 0,
       FOREIGN KEY (from_user_id) REFERENCES users(id)
     )
   `);
+
+    // 兼容旧版本 schema
+    ensureMessagesTableSchema(db);
 
     // 为消息表创建索引，加速查询
     db.exec(`
@@ -65,13 +135,6 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
   `);
-
-    // 迁移：为 messages 表添加 is_revoked 字段（如果不存在）
-    const columns = db.prepare("PRAGMA table_info(messages)").all();
-    if (!columns.find(c => c.name === 'is_revoked')) {
-        db.exec('ALTER TABLE messages ADD COLUMN is_revoked INTEGER DEFAULT 0');
-        console.log('✅ 已添加 is_revoked 字段');
-    }
 
     // 创建默认管理员账号（如果不存在）
     const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get(config.admin.username);

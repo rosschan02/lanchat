@@ -1,6 +1,6 @@
 /**
  * 文件上传路由
- * 处理图片上传并返回访问 URL
+ * 处理图片/文件上传并返回访问 URL
  */
 const express = require('express');
 const multer = require('multer');
@@ -53,7 +53,7 @@ const upload = multer({
 });
 
 /**
- * POST /api/upload - 上传图片
+ * POST /api/upload - 上传图片或文件
  * FormData: file
  * 返回: { url }
  */

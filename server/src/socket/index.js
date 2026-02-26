@@ -10,6 +10,30 @@ const {
     userOnline, userOfflineBySocketId,
     getOnlineUsers, getUserSocketId,
 } = require('./presence');
+const ALLOWED_MESSAGE_TYPES = new Set(['text', 'image', 'file']);
+
+function replyAck(ack, payload) {
+    if (typeof ack === 'function') {
+        ack(payload);
+    }
+}
+
+function isValidFileMessageContent(content) {
+    if (typeof content !== 'string' || !content.trim()) {
+        return false;
+    }
+
+    try {
+        const parsed = JSON.parse(content);
+        return parsed
+            && typeof parsed.name === 'string'
+            && parsed.name.trim().length > 0
+            && typeof parsed.url === 'string'
+            && parsed.url.trim().length > 0;
+    } catch (err) {
+        return false;
+    }
+}
 
 /**
  * 初始化 Socket.IO 事件处理
@@ -66,16 +90,37 @@ function initSocket(io) {
 
         /**
          * 接收聊天消息
-         * data: { to: number, type: 'text'|'image', content: string }
+         * data: { to: number, type: 'text'|'image'|'file', content: string }
          * to=0 表示群聊
          */
-        socket.on('chat:message', (data) => {
-            const { to, type, content } = data;
+        socket.on('chat:message', (data, ack) => {
+            const to = Number.isInteger(data?.to) ? data.to : parseInt(data?.to, 10) || 0;
+            const type = typeof data?.type === 'string' ? data.type.trim() : '';
+            const content = typeof data?.content === 'string' ? data.content : '';
 
-            if (!content || !type) return;
+            if (!ALLOWED_MESSAGE_TYPES.has(type) || !content.trim()) {
+                replyAck(ack, { ok: false, error: '消息格式不合法' });
+                return;
+            }
+            if (to < 0) {
+                replyAck(ack, { ok: false, error: '目标会话不合法' });
+                return;
+            }
+            if (type === 'file' && !isValidFileMessageContent(content)) {
+                replyAck(ack, { ok: false, error: '文件消息格式不合法' });
+                return;
+            }
 
-            // 保存消息到数据库
-            const message = saveMessage(user.id, to || 0, type, content);
+            let message;
+            try {
+                // 保存消息到数据库
+                message = saveMessage(user.id, to, type, content);
+            } catch (err) {
+                console.error('保存消息失败:', err);
+                replyAck(ack, { ok: false, error: '消息保存失败' });
+                socket.emit('chat:error', { error: '消息保存失败，请重试' });
+                return;
+            }
 
             // 检测 @提及
             if (type === 'text' && content.includes('@')) {
@@ -108,6 +153,8 @@ function initSocket(io) {
                 // 发送给自己
                 socket.emit('chat:message', message);
             }
+
+            replyAck(ack, { ok: true, id: message.id });
         });
 
         /**
