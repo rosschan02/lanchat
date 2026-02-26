@@ -8,6 +8,8 @@ dist-electron/
 # 数据库文件
 *.sqlite
 *.sqlite3
+*.sqlite-shm
+*.sqlite-wal
 
 # 上传的文件
 server/src/uploads/
@@ -36,3 +38,6 @@ desktop.ini
 # Electron 打包缓存
 client/release/
 client/dist-electron/
+
+# Agent context files
+server/src/socket/CLAUDE.md
