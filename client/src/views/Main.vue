@@ -174,9 +174,9 @@
               :data-msg-id="msg.id"
               @contextmenu.prevent="showMessageMenu($event, msg)"
             >
-              <div class="message-avatar" v-if="!msg.is_revoked">
+              <el-avatar class="message-avatar" :size="36" :src="getImageUrl(msg.from_avatar)" v-if="!msg.is_revoked">
                 {{ (msg.from_nickname || '?').charAt(0) }}
-              </div>
+              </el-avatar>
               <div class="message-body">
                 <div class="message-nickname" v-if="!msg.is_revoked">{{ msg.from_nickname }}</div>
                 <div class="message-content">
