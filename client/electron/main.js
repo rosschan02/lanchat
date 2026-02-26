@@ -200,7 +200,6 @@ ipcMain.on('screenshot:cancel', () => {
         mainWindow.focus();
     }
 });
-
 // 显示系统通知
 ipcMain.on('notification:show', (event, { title, body }) => {
     const { Notification } = require('electron');
@@ -213,6 +212,73 @@ ipcMain.on('notification:show', (event, { title, body }) => {
             }
         });
         notification.show();
+    }
+});
+
+// 文件保存对话框
+ipcMain.handle('file:saveAs', async (event, { url, filename }) => {
+    const { dialog, net } = require('electron');
+    const fs = require('fs');
+    
+    // 显示保存对话框
+    const result = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: filename,
+        filters: [
+            { name: '所有文件', extensions: ['*'] }
+        ]
+    });
+    
+    if (result.canceled || !result.filePath) {
+        return { success: false, canceled: true };
+    }
+    
+    try {
+        // 下载文件
+        const fileUrl = url.startsWith('http') ? url : `http://localhost:3000${url}`;
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (result) => {
+                if (!settled) {
+                    settled = true;
+                    resolve(result);
+                }
+            };
+
+            const request = net.request(fileUrl);
+            
+            request.on('response', (response) => {
+                const statusCode = response.statusCode || 0;
+                const chunks = [];
+
+                response.on('data', (chunk) => chunks.push(chunk));
+                response.on('error', (err) => {
+                    finish({ success: false, error: err.message });
+                });
+                response.on('end', () => {
+                    if (statusCode < 200 || statusCode >= 300) {
+                        finish({ success: false, error: `下载失败，HTTP ${statusCode}` });
+                        return;
+                    }
+
+                    try {
+                        const buffer = Buffer.concat(chunks);
+                        fs.writeFileSync(result.filePath, buffer);
+                        finish({ success: true, path: result.filePath });
+                    } catch (err) {
+                        finish({ success: false, error: err.message });
+                    }
+                });
+            });
+
+            request.on('error', (err) => {
+                finish({ success: false, error: err.message });
+            });
+            
+            request.end();
+        });
+    } catch (err) {
+        console.error('文件保存失败:', err);
+        return { success: false, error: err.message };
     }
 });
 

@@ -13,6 +13,7 @@ export const useChatStore = defineStore('chat', {
         messagesMap: {},
         // 未读消息计数: { [chatId]: number }
         unreadCount: {},
+        mentionCount: {},
         // 正在输入提示
         typingUser: null,
     }),
@@ -61,6 +62,9 @@ export const useChatStore = defineStore('chat', {
             if (this.unreadCount[chatId]) {
                 this.unreadCount[chatId] = 0;
             }
+            if (this.mentionCount[chatId]) {
+                this.mentionCount[chatId] = 0;
+            }
         },
 
         /**
@@ -84,6 +88,16 @@ export const useChatStore = defineStore('chat', {
             }
         },
 
+        markMessageRevoked(messageId) {
+            Object.keys(this.messagesMap).forEach((chatId) => {
+                const list = this.messagesMap[chatId];
+                const target = list.find(m => m.id === messageId);
+                if (target) {
+                    target.is_revoked = 1;
+                }
+            });
+        },
+
         /**
          * 增加未读计数
          */
@@ -92,6 +106,13 @@ export const useChatStore = defineStore('chat', {
                 this.unreadCount[chatId] = 0;
             }
             this.unreadCount[chatId]++;
+        },
+
+        incrementMention(chatId) {
+            if (!this.mentionCount[chatId]) {
+                this.mentionCount[chatId] = 0;
+            }
+            this.mentionCount[chatId]++;
         },
 
         /**
@@ -113,6 +134,7 @@ export const useChatStore = defineStore('chat', {
             this.currentChat = { id: 0, name: '群聊', type: 'group' };
             this.messagesMap = {};
             this.unreadCount = {};
+            this.mentionCount = {};
             this.typingUser = null;
         },
     },

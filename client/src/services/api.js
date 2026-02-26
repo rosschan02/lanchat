@@ -73,12 +73,19 @@ export const messageAPI = {
         api.get('/api/messages/group', { params: { limit, offset } }),
     getPrivateMessages: (userId, limit = 50, offset = 0) =>
         api.get(`/api/messages/private/${userId}`, { params: { limit, offset } }),
+    searchMessages: (keyword, chatId, page = 1, pageSize = 20) => {
+        const params = { keyword, page, pageSize };
+        if (chatId !== undefined && chatId !== null && chatId !== '') {
+            params.chatId = chatId;
+        }
+        return api.get('/api/messages/search', { params });
+    },
 };
 
 // ===== 文件上传 =====
 
 export const uploadAPI = {
-    uploadImage: (file) => {
+    uploadFile: (file) => {
         const formData = new FormData();
         formData.append('file', file);
         return api.post('/api/upload', formData, {

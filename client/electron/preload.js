@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
         show: (title, body) => ipcRenderer.send('notification:show', { title, body }),
     },
 
+    // 文件下载
+    file: {
+        saveAs: (url, filename) => ipcRenderer.invoke('file:saveAs', { url, filename }),
+    },
+
     // 判断是否在 Electron 环境中
     isElectron: true,
 });

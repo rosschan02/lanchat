@@ -64,6 +64,15 @@ export function sendMessage(to, type, content) {
 }
 
 /**
+ * 撤回消息
+ */
+export function revokeMessage(messageId) {
+    if (socket && socket.connected) {
+        socket.emit('chat:revoke', { messageId });
+    }
+}
+
+/**
  * 发送正在输入提示
  */
 export function sendTyping(to) {
