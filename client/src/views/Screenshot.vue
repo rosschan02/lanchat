@@ -32,6 +32,8 @@
     >
       {{ Math.abs(selection.width) }} × {{ Math.abs(selection.height) }}
     </div>
+
+    <div v-if="!backgroundReady" class="loading-hint">正在准备截图...</div>
   </div>
 </template>
 
@@ -96,6 +98,9 @@ onMounted(async () => {
     window.electronAPI.screenshot.onData((data) => {
       applyScreenshotData(data);
     });
+    window.electronAPI.screenshot.onReset?.(() => {
+      resetSelection(true);
+    });
 
     // 主动拉取一次，避免 did-finish-load 早于页面监听导致数据丢失
     try {
@@ -119,6 +124,7 @@ function applyScreenshotData(data) {
   screenImage.value = data.image;
   screenWidth.value = data.width;
   screenHeight.value = data.height;
+  resetSelection(false);
   backgroundReady.value = false;
   drawBackground();
   drawMask();
@@ -126,6 +132,21 @@ function applyScreenshotData(data) {
 
 function handleResize() {
   drawBackground();
+  drawMask();
+}
+
+function resetSelection(clearImage = false) {
+  isSelecting.value = false;
+  selectionDone.value = false;
+  selection.value = { x: 0, y: 0, width: 0, height: 0 };
+  startPoint.value = { x: 0, y: 0 };
+
+  if (clearImage) {
+    screenImage.value = null;
+    backgroundReady.value = false;
+    clearBackground();
+  }
+
   drawMask();
 }
 
@@ -146,6 +167,14 @@ function drawBackground() {
     backgroundReady.value = true;
   };
   img.src = screenImage.value;
+}
+
+function clearBackground() {
+  const canvas = bgCanvas.value;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 /**
@@ -285,6 +314,19 @@ function cancelScreenshot() {
   color: #fff;
   padding: 2px 8px;
   border-radius: 3px;
+  font-size: 12px;
+}
+
+.loading-hint {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10002;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.7);
+  border-radius: 6px;
+  padding: 6px 10px;
   font-size: 12px;
 }
 </style>

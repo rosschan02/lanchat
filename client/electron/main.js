@@ -99,31 +99,131 @@ function createTray() {
 
 let screenshotWindow = null;
 let currentScreenshotData = null;
+let screenshotWindowReady = false;
+let isStartingScreenshot = false;
+
+function createScreenshotWindow() {
+    if (screenshotWindow && !screenshotWindow.isDestroyed()) {
+        return;
+    }
+
+    screenshotWindowReady = false;
+    screenshotWindow = new BrowserWindow({
+        fullscreen: true,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        show: false,
+        webPreferences: {
+            preload: path.join(__dirname, 'preload.js'),
+            contextIsolation: true,
+            nodeIntegration: false,
+        },
+    });
+
+    screenshotWindow.webContents.on('did-finish-load', () => {
+        screenshotWindowReady = true;
+    });
+
+    screenshotWindow.on('closed', () => {
+        screenshotWindow = null;
+        screenshotWindowReady = false;
+        currentScreenshotData = null;
+    });
+
+    if (isDev) {
+        screenshotWindow.loadURL('http://localhost:5173/#/screenshot');
+    } else {
+        screenshotWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
+            hash: '/screenshot',
+        });
+    }
+}
+
+function waitForScreenshotWindowReady(timeoutMs = 6000) {
+    if (screenshotWindowReady) {
+        return Promise.resolve();
+    }
+
+    return new Promise((resolve, reject) => {
+        if (!screenshotWindow || screenshotWindow.isDestroyed()) {
+            reject(new Error('截图窗口不可用'));
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error('截图窗口加载超时'));
+        }, timeoutMs);
+
+        const onLoad = () => {
+            cleanup();
+            screenshotWindowReady = true;
+            resolve();
+        };
+
+        const onClose = () => {
+            cleanup();
+            reject(new Error('截图窗口已关闭'));
+        };
+
+        const cleanup = () => {
+            clearTimeout(timer);
+            if (screenshotWindow && !screenshotWindow.isDestroyed()) {
+                screenshotWindow.webContents.removeListener('did-finish-load', onLoad);
+                screenshotWindow.removeListener('closed', onClose);
+            }
+        };
+
+        screenshotWindow.webContents.once('did-finish-load', onLoad);
+        screenshotWindow.once('closed', onClose);
+    });
+}
+
+function hideScreenshotWindow() {
+    if (!screenshotWindow || screenshotWindow.isDestroyed()) {
+        return;
+    }
+    screenshotWindow.hide();
+    if (screenshotWindowReady) {
+        screenshotWindow.webContents.send('screenshot:reset');
+    }
+}
 
 /**
  * 启动截图流程
  */
 async function startScreenshot() {
-    if (screenshotWindow && !screenshotWindow.isDestroyed()) {
-        screenshotWindow.focus();
+    if (isStartingScreenshot) {
         return;
     }
 
+    isStartingScreenshot = true;
     const { desktopCapturer, screen } = require('electron');
 
-    // 隐藏主窗口（避免截到自己的窗口）
-    if (mainWindow) mainWindow.hide();
-
-    // 等一小段时间确保窗口完全隐藏
-    await new Promise(resolve => setTimeout(resolve, 200));
-
     try {
+        createScreenshotWindow();
+        await waitForScreenshotWindowReady();
+
+        if (screenshotWindowReady) {
+            screenshotWindow.webContents.send('screenshot:reset');
+        }
+
+        // 隐藏主窗口（避免截到自己的窗口）
+        if (mainWindow && mainWindow.isVisible()) {
+            mainWindow.hide();
+            // 适当等待一帧，避免截图中出现主窗口残影
+            await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+
         // 获取主显示器信息
         const primaryDisplay = screen.getPrimaryDisplay();
         const { width, height } = primaryDisplay.size;
-        const scaleFactor = primaryDisplay.scaleFactor;
-        const captureWidth = Math.max(1, Math.floor(width * scaleFactor));
-        const captureHeight = Math.max(1, Math.floor(height * scaleFactor));
+        const scaleFactor = primaryDisplay.scaleFactor || 1;
+        const captureWidth = Math.max(1, Math.floor(width));
+        const captureHeight = Math.max(1, Math.floor(height));
 
         // 捕获全屏
         const sources = await desktopCapturer.getSources({
@@ -154,45 +254,20 @@ async function startScreenshot() {
             scaleFactor,
         };
 
-        // 创建全屏截图窗口
-        screenshotWindow = new BrowserWindow({
-            fullscreen: true,
-            frame: false,
-            transparent: true,
-            alwaysOnTop: true,
-            skipTaskbar: true,
-            resizable: false,
-            webPreferences: {
-                preload: path.join(__dirname, 'preload.js'),
-                contextIsolation: true,
-                nodeIntegration: false,
-            },
-        });
-
-        // 加载截图覆盖层页面
-        if (isDev) {
-            screenshotWindow.loadURL('http://localhost:5173/#/screenshot');
-        } else {
-            screenshotWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
-                hash: '/screenshot',
-            });
+        if (!screenshotWindow || screenshotWindow.isDestroyed()) {
+            throw new Error('截图窗口不可用');
         }
 
-        // 截图窗口加载完成后发送屏幕截图数据
-        screenshotWindow.webContents.on('did-finish-load', () => {
-            if (screenshotWindow && currentScreenshotData) {
-                screenshotWindow.webContents.send('screenshot:data', currentScreenshotData);
-            }
-        });
-
-        screenshotWindow.on('closed', () => {
-            screenshotWindow = null;
-            currentScreenshotData = null;
-        });
+        screenshotWindow.show();
+        screenshotWindow.focus();
+        screenshotWindow.webContents.send('screenshot:data', currentScreenshotData);
     } catch (err) {
         console.error('截图失败:', err);
         currentScreenshotData = null;
+        hideScreenshotWindow();
         if (mainWindow) mainWindow.show();
+    } finally {
+        isStartingScreenshot = false;
     }
 }
 
@@ -208,10 +283,7 @@ ipcMain.handle('screenshot:getData', () => {
 
 // 截图完成（用户选取了区域）
 ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
-    if (screenshotWindow) {
-        screenshotWindow.close();
-        screenshotWindow = null;
-    }
+    hideScreenshotWindow();
     currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
@@ -223,10 +295,7 @@ ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
 
 // 截图取消
 ipcMain.on('screenshot:cancel', () => {
-    if (screenshotWindow) {
-        screenshotWindow.close();
-        screenshotWindow = null;
-    }
+    hideScreenshotWindow();
     currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
@@ -320,6 +389,7 @@ ipcMain.handle('file:saveAs', async (event, { url, filename }) => {
 app.whenReady().then(() => {
     createMainWindow();
     createTray();
+    createScreenshotWindow();
 
     // 注册截图全局快捷键 Ctrl+Shift+A
     globalShortcut.register('Ctrl+Shift+A', () => {
@@ -334,7 +404,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
         createMainWindow();
     }
 });

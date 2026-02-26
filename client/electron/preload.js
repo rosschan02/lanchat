@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         start: () => ipcRenderer.send('screenshot:start'),
         // 监听截图数据（主进程捕获的全屏截图）
         onData: (callback) => ipcRenderer.on('screenshot:data', (event, data) => callback(data)),
+        // 监听截图重置（清理上次选择框）
+        onReset: (callback) => ipcRenderer.on('screenshot:reset', () => callback()),
         // 主动获取当前截图数据（避免页面加载时序导致丢消息）
         getData: () => ipcRenderer.invoke('screenshot:getData'),
         // 截图完成 - 发送裁剪后的图片
