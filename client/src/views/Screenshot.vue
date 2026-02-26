@@ -14,6 +14,9 @@
     <!-- 遮罩层（暗色区域） -->
     <canvas ref="maskCanvas" class="mask-canvas"></canvas>
 
+    <!-- 屏幕流（隐藏，仅用于抓帧） -->
+    <video ref="captureVideo" class="capture-video" autoplay muted playsinline></video>
+
     <!-- 选取工具栏 -->
     <div
       v-if="selectionDone"
@@ -33,7 +36,7 @@
       {{ Math.abs(selection.width) }} × {{ Math.abs(selection.height) }}
     </div>
 
-    <div v-if="!backgroundReady" class="loading-hint">正在准备截图...</div>
+    <div v-if="!backgroundReady || !streamReady" class="loading-hint">正在准备截图...</div>
   </div>
 </template>
 
@@ -43,12 +46,12 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 const overlayRef = ref(null);
 const bgCanvas = ref(null);
 const maskCanvas = ref(null);
+const captureVideo = ref(null);
 
-// 截图原始数据
-const screenImage = ref(null);
-const screenWidth = ref(0);
-const screenHeight = ref(0);
 const backgroundReady = ref(false);
+const streamReady = ref(false);
+const isCapturing = ref(false);
+let streamInitPromise = null;
 
 // 选取状态
 const isSelecting = ref(false);
@@ -93,22 +96,13 @@ onMounted(async () => {
   // 聚焦以接收键盘事件
   overlayRef.value?.focus();
 
-  // 监听来自主进程的截图数据
   if (window.electronAPI) {
-    window.electronAPI.screenshot.onData((data) => {
-      applyScreenshotData(data);
+    window.electronAPI.screenshot.onCaptureFrame?.(() => {
+      captureFrame();
     });
     window.electronAPI.screenshot.onReset?.(() => {
       resetSelection(true);
     });
-
-    // 主动拉取一次，避免 did-finish-load 早于页面监听导致数据丢失
-    try {
-      const data = await window.electronAPI.screenshot.getData?.();
-      applyScreenshotData(data);
-    } catch (err) {
-      console.error('获取截图数据失败:', err);
-    }
   }
 
   window.addEventListener('resize', handleResize);
@@ -116,22 +110,34 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize);
+  stopCaptureStream();
 });
 
-function applyScreenshotData(data) {
-  if (!data?.image) return;
+async function captureFrame() {
+  if (isCapturing.value) return;
 
-  screenImage.value = data.image;
-  screenWidth.value = data.width;
-  screenHeight.value = data.height;
+  isCapturing.value = true;
   resetSelection(false);
   backgroundReady.value = false;
-  drawBackground();
-  drawMask();
+
+  try {
+    await initCaptureStream();
+    // 等待一帧，确保主窗口隐藏后的最新画面已写入视频流
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    drawBackground();
+    drawMask();
+    overlayRef.value?.focus();
+  } catch (err) {
+    console.error('抓取屏幕帧失败:', err);
+  } finally {
+    isCapturing.value = false;
+  }
 }
 
 function handleResize() {
-  drawBackground();
+  if (backgroundReady.value) {
+    drawBackground();
+  }
   drawMask();
 }
 
@@ -142,7 +148,6 @@ function resetSelection(clearImage = false) {
   startPoint.value = { x: 0, y: 0 };
 
   if (clearImage) {
-    screenImage.value = null;
     backgroundReady.value = false;
     clearBackground();
   }
@@ -155,18 +160,30 @@ function resetSelection(clearImage = false) {
  */
 function drawBackground() {
   const canvas = bgCanvas.value;
-  if (!canvas || !screenImage.value) return;
+  const video = captureVideo.value;
+  if (!canvas || !video || !video.videoWidth || !video.videoHeight) return;
 
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
 
   const ctx = canvas.getContext('2d');
-  const img = new Image();
-  img.onload = () => {
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    backgroundReady.value = true;
-  };
-  img.src = screenImage.value;
+  if (!ctx) return;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(
+    video,
+    0,
+    0,
+    video.videoWidth,
+    video.videoHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+  backgroundReady.value = true;
 }
 
 function clearBackground() {
@@ -184,15 +201,19 @@ function drawMask() {
   const canvas = maskCanvas.value;
   if (!canvas) return;
 
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
 
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!ctx) return;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
   // 半透明黑色遮罩
   ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   // 挖出选区（透明）
   if (isSelecting.value || selectionDone.value) {
@@ -246,18 +267,29 @@ function endSelection(e) {
 
 function confirmScreenshot() {
   const s = normalizedSelection.value;
+  const bg = bgCanvas.value;
+  if (!bg || s.width <= 0 || s.height <= 0) return;
+
+  const scaleX = bg.width / window.innerWidth;
+  const scaleY = bg.height / window.innerHeight;
+  const sx = Math.max(0, Math.floor(s.x * scaleX));
+  const sy = Math.max(0, Math.floor(s.y * scaleY));
+  const sw = Math.max(1, Math.floor(s.width * scaleX));
+  const sh = Math.max(1, Math.floor(s.height * scaleY));
 
   // 从背景 canvas 裁剪选区
   const cropCanvas = document.createElement('canvas');
-  cropCanvas.width = s.width;
-  cropCanvas.height = s.height;
+  cropCanvas.width = sw;
+  cropCanvas.height = sh;
 
   const ctx = cropCanvas.getContext('2d');
+  if (!ctx) return;
+
   // 从背景 canvas 内容中裁剪
   ctx.drawImage(
-    bgCanvas.value,
-    s.x, s.y, s.width, s.height,
-    0, 0, s.width, s.height
+    bg,
+    sx, sy, sw, sh,
+    0, 0, sw, sh
   );
 
   const imageDataUrl = cropCanvas.toDataURL('image/png');
@@ -272,6 +304,73 @@ function cancelScreenshot() {
   if (window.electronAPI) {
     window.electronAPI.screenshot.cancel();
   }
+}
+
+async function initCaptureStream() {
+  const video = captureVideo.value;
+  if (!video) {
+    throw new Error('截图视频节点不存在');
+  }
+
+  if (streamReady.value && video.srcObject) {
+    return;
+  }
+
+  if (streamInitPromise) {
+    return streamInitPromise;
+  }
+
+  streamInitPromise = (async () => {
+    stopCaptureStream();
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: 30, max: 60 },
+      },
+      audio: false,
+    });
+
+    video.srcObject = stream;
+
+    await new Promise((resolve) => {
+      if (video.readyState >= 1) {
+        resolve();
+        return;
+      }
+      video.onloadedmetadata = () => resolve();
+    });
+
+    await video.play();
+
+    const track = stream.getVideoTracks()[0];
+    if (track) {
+      track.addEventListener('ended', () => {
+        streamReady.value = false;
+        backgroundReady.value = false;
+      });
+    }
+
+    streamReady.value = true;
+  })();
+
+  try {
+    await streamInitPromise;
+  } finally {
+    streamInitPromise = null;
+  }
+}
+
+function stopCaptureStream() {
+  const video = captureVideo.value;
+  if (!video) return;
+
+  const stream = video.srcObject;
+  if (stream && typeof stream.getTracks === 'function') {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+
+  video.srcObject = null;
+  streamReady.value = false;
 }
 </script>
 
@@ -298,6 +397,14 @@ function cancelScreenshot() {
 
 .mask-canvas {
   z-index: 1;
+}
+
+.capture-video {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .selection-toolbar {

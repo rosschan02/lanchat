@@ -2,7 +2,7 @@
  * Electron 主进程
  * 负责创建窗口、系统托盘、截图功能
  */
-const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, Tray, Menu, nativeImage, session } = require('electron');
 const path = require('path');
 
 // 主窗口引用
@@ -98,9 +98,36 @@ function createTray() {
 // ===== 截图功能 =====
 
 let screenshotWindow = null;
-let currentScreenshotData = null;
 let screenshotWindowReady = false;
 let isStartingScreenshot = false;
+
+function setupDisplayMediaHandler() {
+    const { desktopCapturer, screen } = require('electron');
+    session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        try {
+            const targetDisplay = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
+            const sources = await desktopCapturer.getSources({
+                types: ['screen'],
+                // 这里只需要 source，不需要预览缩略图，避免无谓开销
+                thumbnailSize: { width: 0, height: 0 },
+            });
+
+            const source =
+                sources.find((item) => item.display_id === String(targetDisplay.id)) ||
+                sources[0];
+
+            if (!source) {
+                callback({});
+                return;
+            }
+
+            callback({ video: source });
+        } catch (err) {
+            console.error('设置屏幕采集源失败:', err);
+            callback({});
+        }
+    });
+}
 
 function createScreenshotWindow() {
     if (screenshotWindow && !screenshotWindow.isDestroyed()) {
@@ -130,7 +157,6 @@ function createScreenshotWindow() {
     screenshotWindow.on('closed', () => {
         screenshotWindow = null;
         screenshotWindowReady = false;
-        currentScreenshotData = null;
     });
 
     if (isDev) {
@@ -201,8 +227,6 @@ async function startScreenshot() {
     }
 
     isStartingScreenshot = true;
-    const { desktopCapturer, screen } = require('electron');
-
     try {
         createScreenshotWindow();
         await waitForScreenshotWindowReady();
@@ -215,44 +239,8 @@ async function startScreenshot() {
         if (mainWindow && mainWindow.isVisible()) {
             mainWindow.hide();
             // 适当等待一帧，避免截图中出现主窗口残影
-            await new Promise((resolve) => setTimeout(resolve, 60));
+            await new Promise((resolve) => setTimeout(resolve, 20));
         }
-
-        // 获取主显示器信息
-        const primaryDisplay = screen.getPrimaryDisplay();
-        const { width, height } = primaryDisplay.size;
-        const scaleFactor = primaryDisplay.scaleFactor || 1;
-        const captureWidth = Math.max(1, Math.floor(width));
-        const captureHeight = Math.max(1, Math.floor(height));
-
-        // 捕获全屏
-        const sources = await desktopCapturer.getSources({
-            types: ['screen'],
-            thumbnailSize: { width: captureWidth, height: captureHeight },
-        });
-
-        if (sources.length === 0) {
-            mainWindow.show();
-            return;
-        }
-
-        // 优先匹配主显示器，避免多屏时拿错源
-        const source =
-            sources.find((item) => item.display_id === String(primaryDisplay.id)) ||
-            sources.find((item) => !item.thumbnail.isEmpty()) ||
-            sources[0];
-
-        if (!source || source.thumbnail.isEmpty()) {
-            throw new Error('未获取到可用的屏幕画面');
-        }
-
-        const screenImage = source.thumbnail.toDataURL();
-        currentScreenshotData = {
-            image: screenImage,
-            width,
-            height,
-            scaleFactor,
-        };
 
         if (!screenshotWindow || screenshotWindow.isDestroyed()) {
             throw new Error('截图窗口不可用');
@@ -260,10 +248,9 @@ async function startScreenshot() {
 
         screenshotWindow.show();
         screenshotWindow.focus();
-        screenshotWindow.webContents.send('screenshot:data', currentScreenshotData);
+        screenshotWindow.webContents.send('screenshot:capture-frame');
     } catch (err) {
         console.error('截图失败:', err);
-        currentScreenshotData = null;
         hideScreenshotWindow();
         if (mainWindow) mainWindow.show();
     } finally {
@@ -277,14 +264,9 @@ ipcMain.on('screenshot:start', () => {
     startScreenshot();
 });
 
-ipcMain.handle('screenshot:getData', () => {
-    return currentScreenshotData;
-});
-
 // 截图完成（用户选取了区域）
 ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
     hideScreenshotWindow();
-    currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
@@ -296,7 +278,6 @@ ipcMain.on('screenshot:complete', (event, imageDataUrl) => {
 // 截图取消
 ipcMain.on('screenshot:cancel', () => {
     hideScreenshotWindow();
-    currentScreenshotData = null;
     if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
@@ -387,6 +368,7 @@ ipcMain.handle('file:saveAs', async (event, { url, filename }) => {
 // ===== 应用生命周期 =====
 
 app.whenReady().then(() => {
+    setupDisplayMediaHandler();
     createMainWindow();
     createTray();
     createScreenshotWindow();

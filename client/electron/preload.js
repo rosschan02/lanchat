@@ -9,12 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     screenshot: {
         // 启动截图
         start: () => ipcRenderer.send('screenshot:start'),
-        // 监听截图数据（主进程捕获的全屏截图）
-        onData: (callback) => ipcRenderer.on('screenshot:data', (event, data) => callback(data)),
+        // 监听开始抓帧指令（截图页收到后抓取当前屏幕帧）
+        onCaptureFrame: (callback) => ipcRenderer.on('screenshot:capture-frame', () => callback()),
         // 监听截图重置（清理上次选择框）
         onReset: (callback) => ipcRenderer.on('screenshot:reset', () => callback()),
-        // 主动获取当前截图数据（避免页面加载时序导致丢消息）
-        getData: () => ipcRenderer.invoke('screenshot:getData'),
         // 截图完成 - 发送裁剪后的图片
         complete: (imageDataUrl) => ipcRenderer.send('screenshot:complete', imageDataUrl),
         // 取消截图
