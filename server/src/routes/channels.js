@@ -9,6 +9,14 @@ const { getUserSocketId } = require('../socket/presence');
 
 const router = express.Router();
 
+function parsePositiveInt(value) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        return null;
+    }
+    return parsed;
+}
+
 function normalizeMemberIds(memberIds) {
     if (!Array.isArray(memberIds)) {
         return [];
@@ -40,16 +48,44 @@ function getChannelMembers(db, channelId) {
     `).all(channelId);
 }
 
-function emitChannelUpdated(req, userIds) {
+function getChannelMemberIds(db, channelId) {
+    return db.prepare('SELECT user_id FROM channel_members WHERE channel_id = ?')
+        .all(channelId)
+        .map((row) => row.user_id);
+}
+
+function isChannelMember(db, channelId, userId) {
+    return !!db.prepare(`
+        SELECT 1
+        FROM channel_members
+        WHERE channel_id = ? AND user_id = ?
+        LIMIT 1
+    `).get(channelId, userId);
+}
+
+function emitToUsers(req, userIds, event, payload) {
     const io = req.app.get('io');
     if (!io) return;
 
     userIds.forEach((userId) => {
         const socketId = getUserSocketId(userId);
         if (socketId) {
-            io.to(socketId).emit('channel:updated');
+            io.to(socketId).emit(event, payload);
         }
     });
+}
+
+function emitChannelUpdated(req, userIds) {
+    emitToUsers(req, userIds, 'channel:updated');
+}
+
+function queryAnnouncement(db, channelId) {
+    return db.prepare(`
+        SELECT ca.channel_id, ca.content, ca.updated_by, ca.updated_at, u.nickname as updated_by_nickname
+        FROM channel_announcements ca
+        LEFT JOIN users u ON u.id = ca.updated_by
+        WHERE ca.channel_id = ?
+    `).get(channelId) || null;
 }
 
 // 认证后可访问
@@ -110,6 +146,69 @@ router.get('/admin', adminMiddleware, (req, res) => {
             ...channel,
             members: memberMap[channel.id] || [],
         })),
+    });
+});
+
+/**
+ * GET /api/channels/:id/announcement - 获取频道公告
+ */
+router.get('/:id/announcement', (req, res) => {
+    const channelId = parsePositiveInt(req.params.id);
+    if (!channelId) {
+        return res.status(400).json({ error: '频道 ID 不合法' });
+    }
+
+    const db = getDb();
+    if (!isChannelMember(db, channelId, req.user.id)) {
+        return res.status(403).json({ error: '无权限查看该频道公告' });
+    }
+
+    const announcement = queryAnnouncement(db, channelId);
+    res.json({ announcement });
+});
+
+/**
+ * PUT /api/channels/:id/announcement - 更新频道公告（管理员）
+ * Body: { content }
+ */
+router.put('/:id/announcement', adminMiddleware, (req, res) => {
+    const channelId = parsePositiveInt(req.params.id);
+    if (!channelId) {
+        return res.status(400).json({ error: '频道 ID 不合法' });
+    }
+
+    const db = getDb();
+    const exists = db.prepare('SELECT id FROM channels WHERE id = ?').get(channelId);
+    if (!exists) {
+        return res.status(404).json({ error: '频道不存在' });
+    }
+
+    const content = String(req.body?.content || '').trim();
+    if (content.length > 500) {
+        return res.status(400).json({ error: '公告内容不能超过 500 个字符' });
+    }
+
+    if (!content) {
+        db.prepare('DELETE FROM channel_announcements WHERE channel_id = ?').run(channelId);
+    } else {
+        db.prepare(`
+            INSERT INTO channel_announcements (channel_id, content, updated_by, updated_at)
+            VALUES (?, ?, ?, datetime('now', 'localtime'))
+            ON CONFLICT(channel_id)
+            DO UPDATE SET
+                content = excluded.content,
+                updated_by = excluded.updated_by,
+                updated_at = datetime('now', 'localtime')
+        `).run(channelId, content, req.user.id);
+    }
+
+    const announcement = queryAnnouncement(db, channelId);
+    const memberIds = getChannelMemberIds(db, channelId);
+    emitToUsers(req, memberIds, 'channel:announcement', { channelId, announcement });
+
+    res.json({
+        message: content ? '频道公告已更新' : '频道公告已清空',
+        announcement,
     });
 });
 
@@ -183,8 +282,8 @@ router.post('/', adminMiddleware, (req, res) => {
  * Body: { name?, memberIds? }
  */
 router.put('/:id', adminMiddleware, (req, res) => {
-    const channelId = parseInt(req.params.id, 10);
-    if (!Number.isInteger(channelId) || channelId <= 0) {
+    const channelId = parsePositiveInt(req.params.id);
+    if (!channelId) {
         return res.status(400).json({ error: '频道 ID 不合法' });
     }
 

@@ -54,6 +54,7 @@ api.interceptors.response.use(
 export const authAPI = {
     login: (username, password) => api.post('/api/auth/login', { username, password }),
     getProfile: () => api.get('/api/auth/profile'),
+    updateProfile: (data) => api.put('/api/auth/profile', data),
 };
 
 // ===== 用户管理接口 =====
@@ -85,6 +86,16 @@ export const messageAPI = {
         }
         return api.get('/api/messages/search', { params });
     },
+    getReadState: (chatId, channelId) => {
+        const params = {};
+        if (chatId !== undefined && chatId !== null && chatId !== '') {
+            params.chatId = chatId;
+        }
+        if (channelId !== undefined && channelId !== null && channelId !== '') {
+            params.channelId = channelId;
+        }
+        return api.get('/api/messages/read-state', { params });
+    },
 };
 
 // ===== 频道接口 =====
@@ -94,6 +105,8 @@ export const channelAPI = {
     getAdminChannels: () => api.get('/api/channels/admin'),
     createChannel: (data) => api.post('/api/channels', data),
     updateChannel: (id, data) => api.put(`/api/channels/${id}`, data),
+    getAnnouncement: (id) => api.get(`/api/channels/${id}/announcement`),
+    updateAnnouncement: (id, content) => api.put(`/api/channels/${id}/announcement`, { content }),
 };
 
 // ===== 文件上传 =====

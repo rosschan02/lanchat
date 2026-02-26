@@ -59,6 +59,13 @@ export const useChatStore = defineStore('chat', {
             this.onlineUsers = this.onlineUsers.filter(u => u.id !== userId);
         },
 
+        updateOnlineUserProfile(userId, patch = {}) {
+            this.onlineUsers = this.onlineUsers.map((user) => {
+                if (user.id !== userId) return user;
+                return { ...user, ...patch };
+            });
+        },
+
         /**
          * 切换聊天对象
          */
@@ -102,6 +109,17 @@ export const useChatStore = defineStore('chat', {
                 const target = list.find(m => m.id === messageId);
                 if (target) {
                     target.is_revoked = 1;
+                }
+            });
+        },
+
+        markMessageEdited(messageId, content, editedAt) {
+            Object.keys(this.messagesMap).forEach((chatId) => {
+                const list = this.messagesMap[chatId];
+                const target = list.find(m => m.id === messageId);
+                if (target) {
+                    target.content = content;
+                    target.edited_at = editedAt || target.edited_at || null;
                 }
             });
         },

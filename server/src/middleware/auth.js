@@ -21,7 +21,11 @@ function authMiddleware(req, res, next) {
 
         // 查找用户确认存在且未被禁用
         const db = getDb();
-        const user = db.prepare('SELECT id, username, nickname, role, status FROM users WHERE id = ?').get(decoded.userId);
+        const user = db.prepare(`
+            SELECT id, username, nickname, avatar, bio, role, status
+            FROM users
+            WHERE id = ?
+        `).get(decoded.userId);
 
         if (!user) {
             return res.status(401).json({ error: '用户不存在' });

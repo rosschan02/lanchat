@@ -14,6 +14,16 @@ function userOnline(userId, socketId, userInfo) {
 }
 
 /**
+ * 更新在线用户资料
+ */
+function updateOnlineUser(userId, patch = {}) {
+    const existing = onlineUsers.get(userId);
+    if (!existing) return false;
+    onlineUsers.set(userId, { ...existing, ...patch });
+    return true;
+}
+
+/**
  * 用户下线
  */
 function userOffline(userId) {
@@ -67,6 +77,7 @@ function getUserSocketId(userId) {
 
 module.exports = {
     userOnline,
+    updateOnlineUser,
     userOffline,
     userOfflineBySocketId,
     getOnlineUsers,

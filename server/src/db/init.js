@@ -26,6 +26,18 @@ function getDb() {
 }
 
 /**
+ * 确保 users 表包含资料字段
+ */
+function ensureUsersTableSchema(db) {
+    const columns = db.prepare("PRAGMA table_info(users)").all();
+    const hasBio = columns.some((column) => column.name === 'bio');
+    if (!hasBio) {
+        db.exec("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''");
+        console.log('✅ 已添加 users.bio 字段');
+    }
+}
+
+/**
  * 确保 messages 表结构支持 file 类型消息和频道字段
  * 兼容早期版本 schema
  */
@@ -43,6 +55,8 @@ function ensureMessagesTableSchema(db) {
     const columns = db.prepare("PRAGMA table_info(messages)").all();
     const hasIsRevoked = columns.some((column) => column.name === 'is_revoked');
     const hasChannelId = columns.some((column) => column.name === 'channel_id');
+    const hasReplyToMessageId = columns.some((column) => column.name === 'reply_to_message_id');
+    const hasEditedAt = columns.some((column) => column.name === 'edited_at');
 
     // 旧表约束不支持 file，执行重建迁移
     if (!supportsFileType) {
@@ -57,14 +71,22 @@ function ensureMessagesTableSchema(db) {
                   created_at TEXT DEFAULT (datetime('now', 'localtime')),
                   is_revoked INTEGER DEFAULT 0,
                   channel_id INTEGER DEFAULT NULL,
-                  FOREIGN KEY (from_user_id) REFERENCES users(id)
+                  reply_to_message_id INTEGER DEFAULT NULL,
+                  edited_at TEXT DEFAULT NULL,
+                  FOREIGN KEY (from_user_id) REFERENCES users(id),
+                  FOREIGN KEY (reply_to_message_id) REFERENCES messages(id)
                 )
             `);
 
             const isRevokedExpr = hasIsRevoked ? 'COALESCE(is_revoked, 0)' : '0';
             const channelIdExpr = hasChannelId ? 'channel_id' : 'NULL';
+            const replyToExpr = hasReplyToMessageId ? 'reply_to_message_id' : 'NULL';
+            const editedAtExpr = hasEditedAt ? 'edited_at' : 'NULL';
             db.exec(`
-                INSERT INTO messages_new (id, from_user_id, to_user_id, type, content, created_at, is_revoked, channel_id)
+                INSERT INTO messages_new (
+                    id, from_user_id, to_user_id, type, content, created_at,
+                    is_revoked, channel_id, reply_to_message_id, edited_at
+                )
                 SELECT id,
                        from_user_id,
                        COALESCE(to_user_id, 0),
@@ -75,7 +97,9 @@ function ensureMessagesTableSchema(db) {
                        content,
                        created_at,
                        ${isRevokedExpr},
-                       ${channelIdExpr}
+                       ${channelIdExpr},
+                       ${replyToExpr},
+                       ${editedAtExpr}
                 FROM messages
             `);
 
@@ -98,6 +122,16 @@ function ensureMessagesTableSchema(db) {
         db.exec('ALTER TABLE messages ADD COLUMN channel_id INTEGER DEFAULT NULL');
         console.log('✅ 已添加 channel_id 字段');
     }
+
+    if (!hasReplyToMessageId) {
+        db.exec('ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER DEFAULT NULL');
+        console.log('✅ 已添加 reply_to_message_id 字段');
+    }
+
+    if (!hasEditedAt) {
+        db.exec('ALTER TABLE messages ADD COLUMN edited_at TEXT DEFAULT NULL');
+        console.log('✅ 已添加 edited_at 字段');
+    }
 }
 
 /**
@@ -114,6 +148,7 @@ function initDatabase() {
       password TEXT NOT NULL,
       nickname TEXT NOT NULL,
       avatar TEXT DEFAULT '',
+      bio TEXT DEFAULT '',
       role TEXT DEFAULT 'user' CHECK(role IN ('admin', 'user')),
       status TEXT DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
       created_at TEXT DEFAULT (datetime('now', 'localtime')),
@@ -132,7 +167,10 @@ function initDatabase() {
       created_at TEXT DEFAULT (datetime('now', 'localtime')),
       is_revoked INTEGER DEFAULT 0,
       channel_id INTEGER DEFAULT NULL,
-      FOREIGN KEY (from_user_id) REFERENCES users(id)
+      reply_to_message_id INTEGER DEFAULT NULL,
+      edited_at TEXT DEFAULT NULL,
+      FOREIGN KEY (from_user_id) REFERENCES users(id),
+      FOREIGN KEY (reply_to_message_id) REFERENCES messages(id)
     )
   `);
 
@@ -162,7 +200,32 @@ function initDatabase() {
     )
   `);
 
+    // 频道公告（每个频道最多一条，更新即覆盖）
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS channel_announcements (
+      channel_id INTEGER PRIMARY KEY,
+      content TEXT NOT NULL,
+      updated_by INTEGER NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+      FOREIGN KEY (updated_by) REFERENCES users(id)
+    )
+  `);
+
+    // 会话已读状态：chat_key 支持 group / private:{userId} / channel:{channelId}
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_reads (
+      user_id INTEGER NOT NULL,
+      chat_key TEXT NOT NULL,
+      last_read_message_id INTEGER DEFAULT 0,
+      updated_at TEXT DEFAULT (datetime('now', 'localtime')),
+      PRIMARY KEY (user_id, chat_key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
     // 兼容旧版本 schema
+    ensureUsersTableSchema(db);
     ensureMessagesTableSchema(db);
 
     // 为消息表创建索引，加速查询
@@ -171,7 +234,9 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to_message_id);
     CREATE INDEX IF NOT EXISTS idx_channel_members_user ON channel_members(user_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_reads_chat_key ON chat_reads(chat_key);
   `);
 
     // 创建默认管理员账号（如果不存在）

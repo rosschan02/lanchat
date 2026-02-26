@@ -59,7 +59,13 @@ export function getSocket() {
  */
 export function sendMessage(to, type, content, options = {}) {
     if (socket && socket.connected) {
-        socket.emit('chat:message', { to, type, content, channelId: options.channelId });
+        socket.emit('chat:message', {
+            to,
+            type,
+            content,
+            channelId: options.channelId,
+            replyToMessageId: options.replyToMessageId,
+        });
     }
 }
 
@@ -73,10 +79,36 @@ export function revokeMessage(messageId) {
 }
 
 /**
+ * 编辑消息
+ */
+export function editMessage(messageId, content, ack) {
+    if (socket && socket.connected) {
+        socket.emit('chat:edit', { messageId, content }, ack);
+        return;
+    }
+    if (typeof ack === 'function') {
+        ack({ ok: false, error: '连接已断开' });
+    }
+}
+
+/**
  * 发送正在输入提示
  */
 export function sendTyping(to, options = {}) {
     if (socket && socket.connected) {
         socket.emit('chat:typing', { to, channelId: options.channelId });
+    }
+}
+
+/**
+ * 标记会话已读
+ */
+export function markChatRead(to, options = {}, ack) {
+    if (socket && socket.connected) {
+        socket.emit('chat:read', { to, channelId: options.channelId }, ack);
+        return;
+    }
+    if (typeof ack === 'function') {
+        ack({ ok: false, error: '连接已断开' });
     }
 }
